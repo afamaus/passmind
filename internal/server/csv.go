@@ -41,12 +41,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request, v *vault.V
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	check, _, err := vault.Open(s.vaultPath, v.User(), req.Password, kf)
-	if err != nil {
+	if !s.checkPassword(v, req.Password, kf) {
 		writeErr(w, http.StatusUnauthorized, "Passwort oder Schlüsseldatei ist falsch")
 		return
 	}
-	check.Close()
 
 	var buf bytes.Buffer
 	buf.WriteString("\uFEFF") // BOM, damit Excel UTF-8 erkennt

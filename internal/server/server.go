@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"passmind/internal/ldapauth"
 	"passmind/internal/vault"
 )
 
@@ -34,8 +35,9 @@ type Server struct {
 	v            *vault.Vault
 	lastActivity time.Time
 	failures     int
-	pending      *pendingTOTP // TOTP-Geheimnis während Einrichtung/Neueinrichtung
-	enroll       *vault.Vault // geöffnet, aber erste Anmeldung (Passwort/MFA) noch nicht abgeschlossen
+	pending      *pendingTOTP                                                    // TOTP-Geheimnis während Einrichtung/Neueinrichtung
+	enroll       *vault.Vault                                                    // geöffnet, aber erste Anmeldung (Passwort/MFA) noch nicht abgeschlossen
+	adAuth       func(cfg vault.ADConfig, user, password string) (string, error) // LDAP-Prüfung, im Test ersetzbar
 
 	sessionToken string
 	launchToken  string
@@ -61,6 +63,7 @@ func New(vaultPath, configPath string, static fs.FS) *Server {
 		sessionToken: randomToken(),
 		launchToken:  randomToken(),
 		static:       static,
+		adAuth:       ldapauth.Authenticate,
 		Quit:         make(chan struct{}),
 	}
 }
@@ -149,6 +152,10 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("DELETE /api/users/{name}", s.admin(s.handleRemoveUser))
 	api.HandleFunc("POST /api/users/{name}/reset", s.admin(s.handleResetUser))
 	api.HandleFunc("PUT /api/users/{name}/role", s.admin(s.handleSetRole))
+	api.HandleFunc("GET /api/ad", s.admin(s.handleGetAD))
+	api.HandleFunc("PUT /api/ad", s.admin(s.handleSetAD))
+	api.HandleFunc("DELETE /api/ad", s.admin(s.handleDisableAD))
+	api.HandleFunc("POST /api/ad/test", s.admin(s.handleTestAD))
 
 	mux.Handle("/api/", s.apiGuard(api))
 	return s.securityHeaders(mux)

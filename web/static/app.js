@@ -257,6 +257,8 @@ async function showLocked(message) {
   $('unlock-user-wrap').classList.toggle('hidden', !!login.legacy);
   $('unlock-user').required = !login.legacy;
   $('unlock-users').replaceChildren(...users.map((u) => el('option', { value: u })));
+  $('unlock-ad-hint').classList.toggle('hidden', !login.adDomain);
+  $('unlock-ad-hint').textContent = login.adDomain ? `Lokaler Benutzer oder AD-Konto, z. B. name oder name@${login.adDomain}` : '';
   const last = lastUser();
   const known = users.find((u) => u.toLowerCase() === last.toLowerCase());
   $('unlock-user').value = known || (users.length === 1 ? users[0] : '');
@@ -377,7 +379,7 @@ async function openMain() {
 async function reload() {
   data = await api('GET', 'data');
   clipboardSeconds = data.settings.clipboardSeconds || 20;
-  $('whoami').textContent = '👤 ' + data.user + (data.role === 'admin' ? ' (Admin)' : '');
+  $('whoami').textContent = '👤 ' + data.user + (data.ad ? ' · AD' : '') + (data.role === 'admin' ? ' (Admin)' : '');
   if (currentFolder && !data.folders.some((f) => f.id === currentFolder)) currentFolder = '';
   $('bulk-folder').replaceChildren();
   renderTree();
@@ -827,7 +829,10 @@ function openSettings() {
   $('m-recovery').classList.add('hidden');
   $('u-start').classList.add('hidden');
   for (const x of document.querySelectorAll('.admin-only')) x.classList.toggle('hidden', data.role !== 'admin');
+  $('cred-form').classList.toggle('hidden', !!data.ad);
+  $('x-pw').placeholder = data.ad ? 'Dein AD-Passwort zur Bestätigung' : 'Dein Passwort zur Bestätigung';
   loadUsers();
+  if (data.role === 'admin') loadAD();
   $('dlg-settings').showModal();
 }
 
@@ -852,10 +857,21 @@ async function loadUsers() {
   try { r = await api('GET', 'users'); } catch (e) { $('settings-error').textContent = e.message; return; }
   const rows = r.users.map((u) => {
     const me = u.name.toLowerCase() === r.me.toLowerCase();
-    const state = u.mustChange ? 'Wartet auf erste Anmeldung' : (u.mfa ? 'MFA eingerichtet' : 'MFA wird beim Anmelden eingerichtet');
+    const state = (u.ad ? 'AD-Konto · ' : '') + (u.mustChange ? 'Wartet auf erste Anmeldung' : (u.mfa ? 'MFA eingerichtet' : 'MFA wird beim Anmelden eingerichtet'));
     const enc = encodeURIComponent(u.name);
     const actions = [];
-    if (r.admin && !me) {
+    if (r.admin && !me && u.ad) {
+      actions.push(
+        el('button', { type: 'button', class: 'icon', title: 'MFA zurücksetzen (Handy verloren). Beim nächsten Anmelden richtet der Benutzer sie neu ein.', onclick: () => {
+          if (!confirm(`Authenticator von ${u.name} zurücksetzen?`)) return;
+          userAction(async () => { await api('POST', `users/${enc}/reset`); toast(`MFA von ${u.name} zurückgesetzt`); });
+        } }, '↺'),
+        el('button', { type: 'button', class: 'icon', title: 'Aus der Liste entfernen. Den Zugang selbst steuert die AD-Gruppe.', onclick: () => {
+          if (!confirm(`${u.name} aus der Liste entfernen? Solange ${u.name} in der AD-Gruppe ist, ist eine erneute Anmeldung möglich (mit neuer MFA). Den Zugang nimmst du über die AD-Gruppe weg.`)) return;
+          userAction(() => api('DELETE', `users/${enc}`));
+        } }, '🗑'),
+      );
+    } else if (r.admin && !me) {
       const other = u.role === 'admin' ? 'user' : 'admin';
       actions.push(
         el('button', { type: 'button', class: 'icon', title: `Zu ${roleLabel[other]} machen`, onclick: () => userAction(() => api('PUT', `users/${enc}/role`, { role: other })) }, u.role === 'admin' ? '⬇' : '⬆'),
@@ -877,6 +893,70 @@ async function loadUsers() {
   });
   $('user-rows').replaceChildren(...rows);
 }
+
+// ---------- Active Directory ----------
+
+function adFormConfig() {
+  return {
+    server: $('ad-server').value.trim(), domain: $('ad-domain').value.trim(), group: $('ad-group').value.trim(),
+    role: $('ad-role').value, baseDN: $('ad-basedn').value.trim(), skipVerify: $('ad-skipverify').checked,
+  };
+}
+
+async function loadAD() {
+  $('ad-status').textContent = '';
+  try {
+    const r = await api('GET', 'ad');
+    const c = r.config;
+    $('ad-keyfile').textContent = r.keyFile;
+    $('ad-server').value = c ? c.server : '';
+    $('ad-domain').value = c ? c.domain : '';
+    $('ad-group').value = c ? c.group : '';
+    $('ad-role').value = c ? c.role || 'user' : 'user';
+    $('ad-basedn').value = c ? c.baseDN || '' : '';
+    $('ad-skipverify').checked = !!(c && c.skipVerify);
+    $('ad-save').textContent = c ? 'Speichern' : 'AD-Anmeldung einschalten';
+    $('ad-disable').classList.toggle('hidden', !c);
+    for (const x of $('ad-form').querySelectorAll('input, select, button')) x.disabled = !r.local;
+    if (!r.local) $('ad-status').textContent = 'Die AD-Einstellungen kann nur ein lokaler Admin ändern.';
+    else if (c) $('ad-status').textContent = `Eingeschaltet für Gruppe ${c.group}.`;
+  } catch (e) { $('settings-error').textContent = e.message; }
+}
+
+$('ad-test').addEventListener('click', async () => {
+  const btn = $('ad-test');
+  busy(btn, true);
+  $('ad-status').textContent = 'Prüfe …';
+  try {
+    const r = await api('POST', 'ad/test', { config: adFormConfig(), user: $('ad-test-user').value, password: $('ad-test-pw').value });
+    $('ad-status').textContent = `✓ Verbindung ok: ${r.user} ist in der Gruppe.`;
+  } catch (e) {
+    $('ad-status').textContent = '✗ ' + e.message;
+  } finally {
+    $('ad-test-pw').value = '';
+    busy(btn, false);
+  }
+});
+
+$('ad-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    const r = await api('PUT', 'ad', adFormConfig());
+    toast('AD-Anmeldung gespeichert. Jetzt die Rechte der .adkey-Datei auf die Gruppe beschränken!', false, 8000);
+    await loadAD();
+    $('ad-keyfile').textContent = r.keyFile;
+  } catch (e) { $('ad-status').textContent = '✗ ' + e.message; }
+});
+
+$('ad-disable').addEventListener('click', async () => {
+  if (!confirm('AD-Anmeldung ausschalten? AD-Benutzer kommen dann nicht mehr hinein, der Tresor wird neu verschlüsselt.')) return;
+  try {
+    await api('DELETE', 'ad');
+    toast('AD-Anmeldung ausgeschaltet');
+    await loadAD();
+    await loadUsers();
+  } catch (e) { $('ad-status').textContent = '✗ ' + e.message; }
+});
 
 $('user-add-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();

@@ -20,6 +20,7 @@ type UserView struct {
 	MFA        bool      `json:"mfa"`
 	MustChange bool      `json:"mustChange"`
 	KeyFile    bool      `json:"keyFile"`
+	AD         bool      `json:"ad"`
 	Created    time.Time `json:"created"`
 }
 
@@ -27,6 +28,9 @@ type UserView struct {
 func (v *Vault) Users() []UserView {
 	out := []UserView{}
 	for _, s := range v.slots {
+		if s.Group {
+			continue
+		}
 		u := UserView{Name: s.User, Role: RoleUser, MFA: s.MFA != nil, MustChange: s.MustChange, KeyFile: s.KeyFile}
 		for _, info := range v.Data.Users {
 			if strings.EqualFold(info.Name, s.User) {
@@ -34,6 +38,15 @@ func (v *Vault) Users() []UserView {
 			}
 		}
 		out = append(out, u)
+	}
+	for _, info := range v.Data.Users {
+		if info.AD {
+			role := RoleUser
+			if v.ad != nil && v.ad.Role == RoleAdmin {
+				role = RoleAdmin
+			}
+			out = append(out, UserView{Name: info.Name, Role: role, MFA: info.MFA != nil, AD: true, Created: info.Created})
+		}
 	}
 	slices.SortFunc(out, func(a, b UserView) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) })
 	return out
@@ -74,7 +87,7 @@ func (v *Vault) AddUser(name, role string) (string, error) {
 	if _, err := v.Refresh(); err != nil {
 		return "", err
 	}
-	if findSlot(v.slots, name) >= 0 {
+	if findSlot(v.slots, name) >= 0 || v.adUser(name) != nil {
 		return "", errors.New("Diesen Benutzer gibt es schon")
 	}
 	pw := StartPassword()
@@ -99,8 +112,16 @@ func (v *Vault) ResetUser(name string) (string, error) {
 	if _, err := v.Refresh(); err != nil {
 		return "", err
 	}
+	if u := v.adUser(name); u != nil {
+		// AD-Benutzer: Passwort kommt aus dem AD, nur die MFA wird zurückgesetzt.
+		if strings.EqualFold(u.Name, v.user) {
+			return "", errors.New("Das eigene Konto bitte über die Einstellungen ändern")
+		}
+		u.MFA, u.ChangedAt = nil, time.Now().UTC()
+		return "", v.write()
+	}
 	i := findSlot(v.slots, name)
-	if i < 0 {
+	if i < 0 || v.slots[i].Group {
 		return "", errors.New("Benutzer nicht gefunden")
 	}
 	if strings.EqualFold(v.slots[i].User, v.user) {
@@ -125,8 +146,19 @@ func (v *Vault) RemoveUser(name string) error {
 	if _, err := v.Refresh(); err != nil {
 		return err
 	}
+	if u := v.adUser(name); u != nil {
+		// AD-Benutzer: Zugang steuert die AD-Gruppe. Entfernen löscht seine MFA und die Angaben;
+		// solange er in der Gruppe ist, kann er sich neu anmelden und die MFA neu einrichten.
+		if strings.EqualFold(u.Name, v.user) {
+			return errors.New("Du kannst dich nicht selbst entfernen")
+		}
+		n := u.Name
+		v.Data.Users = slices.DeleteFunc(v.Data.Users, func(x UserInfo) bool { return x.AD && strings.EqualFold(x.Name, n) })
+		v.Data.Deleted = append(v.Data.Deleted, Tombstone{ID: userTomb(n), At: time.Now().UTC()})
+		return v.write()
+	}
 	i := findSlot(v.slots, name)
-	if i < 0 {
+	if i < 0 || v.slots[i].Group {
 		return errors.New("Benutzer nicht gefunden")
 	}
 	if strings.EqualFold(v.slots[i].User, v.user) {
@@ -153,6 +185,9 @@ func (v *Vault) SetRole(name, role string) error {
 	}
 	if _, err := v.Refresh(); err != nil {
 		return err
+	}
+	if v.adUser(name) != nil {
+		return errors.New("Die Rolle der AD-Benutzer wird in den AD-Einstellungen festgelegt")
 	}
 	if role != RoleAdmin && v.roleOf(name) == RoleAdmin && v.adminCount() <= 1 {
 		return errors.New("Es muss mindestens einen Admin geben")

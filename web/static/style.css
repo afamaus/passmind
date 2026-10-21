@@ -263,3 +263,7 @@ body.dragging .tree .node.drop { background: var(--surface-2); }
 .bulk-bar .bulk-move { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; }
 .bulk-bar .bulk-move select { width: auto; margin: 0; }
 .btn.danger-text { color: var(--danger); }
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+label.check input { width: auto; margin: 0; }
+.ad-test { margin-top: 12px; }
+#unlock-ad-hint { display: block; margin: -4px 0 8px; }

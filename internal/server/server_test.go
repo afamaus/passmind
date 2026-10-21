@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -12,6 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"passmind/internal/ldapauth"
 	"passmind/internal/totp"
 	"passmind/internal/vault"
 )
@@ -334,5 +336,78 @@ func TestBulkEntries(t *testing.T) {
 	entries := d["entries"].([]any)
 	if len(entries) != 1 || entries[0].(map[string]any)["folderId"] != f["id"] {
 		t.Fatalf("Ergebnis: %v", entries)
+	}
+}
+
+func TestADLogin(t *testing.T) {
+	s, c, launch := startServer(t)
+	c.http.Get(launch)
+	s.failures = -100
+	s.adAuth = func(cfg vault.ADConfig, user, password string) (string, error) {
+		if cfg.Group != "GR-PASS-ADM" {
+			return "", errors.New("falsche Gruppe")
+		}
+		switch {
+		case strings.EqualFold(user, `FIRMA\anna`) && password == "ad-pw":
+			return "anna", nil
+		case user == "bob" && password == "ad-pw":
+			return "", ldapauth.ErrNotInGroup
+		}
+		return "", ldapauth.ErrBadCredentials
+	}
+	_, setup := c.do("POST", "api/setup/totp", nil)
+	code6, _ := totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+
+	cfg := map[string]any{"server": "dc01.firma.local", "domain": "firma.local", "group": "GR-PASS-ADM", "role": "admin"}
+	if code, r := c.do("POST", "api/ad/test", map[string]any{"config": cfg, "user": `FIRMA\anna`, "password": "ad-pw"}); code != 200 || r["user"] != "anna" {
+		t.Fatalf("AD-Test: %d %v", code, r)
+	}
+	if code, r := c.do("PUT", "api/ad", cfg); code != 200 {
+		t.Fatalf("AD einrichten: %d %v", code, r)
+	}
+	c.do("POST", "api/lock", nil)
+	_, st := c.do("GET", "api/status", nil)
+	if st["login"].(map[string]any)["adDomain"] != "firma.local" {
+		t.Fatalf("Status: %v", st["login"])
+	}
+
+	if code, r := c.do("POST", "api/unlock", map[string]string{"user": "bob", "password": "ad-pw"}); code != http.StatusUnauthorized || !strings.Contains(r["error"].(string), "Gruppe") {
+		t.Fatalf("nicht in Gruppe: %d %v", code, r)
+	}
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": `FIRMA\anna`, "password": "falsch"}); code != http.StatusUnauthorized {
+		t.Fatal("falsches AD-Passwort akzeptiert")
+	}
+	code, en := c.do("POST", "api/unlock", map[string]string{"user": `FIRMA\anna`, "password": "ad-pw"})
+	if code != 200 || en["enroll"] != true || en["mustChange"] != false || en["user"] != "anna" {
+		t.Fatalf("Einrichtung erwartet: %d %v", code, en)
+	}
+	annaCode, _ := totp.Code(en["secret"].(string), time.Now())
+	if code, r := c.do("POST", "api/enroll", map[string]string{"code": annaCode}); code != 200 {
+		t.Fatalf("MFA einrichten: %d %v", code, r)
+	}
+	_, d := c.do("GET", "api/data", nil)
+	if d["user"] != "anna" || d["ad"] != true || d["role"] != "admin" {
+		t.Fatalf("Daten: %v %v %v", d["user"], d["ad"], d["role"])
+	}
+	if code, _ := c.do("POST", "api/ad/test", map[string]any{"config": cfg, "user": "x", "password": "y"}); code != http.StatusBadRequest {
+		t.Fatal("AD-Test mit falschem Konto ok")
+	}
+	if code, _ := c.do("PUT", "api/ad", cfg); code != http.StatusBadRequest {
+		t.Fatal("AD-Benutzer darf AD-Einstellungen ändern")
+	}
+	c.do("POST", "api/lock", nil)
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": `FIRMA\anna`, "password": "ad-pw", "code": code6}); code != http.StatusUnauthorized {
+		t.Fatal("fremder TOTP-Code akzeptiert")
+	}
+	annaCode, _ = totp.Code(en["secret"].(string), time.Now())
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": `FIRMA\anna`, "password": "ad-pw", "code": annaCode}); code != 200 {
+		t.Fatal("AD-Anmeldung mit MFA fehlgeschlagen")
+	}
+	// Lokaler Admin geht weiterhin.
+	c.do("POST", "api/lock", nil)
+	code6, _ = totp.Code(setup["secret"].(string), time.Now())
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6}); code != 200 {
+		t.Fatal("lokaler Admin kommt nicht mehr hinein")
 	}
 }

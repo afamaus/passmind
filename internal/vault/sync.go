@@ -40,11 +40,11 @@ func (v *Vault) Refresh() (changed bool, err error) {
 	// Datenschlüssel: entweder unverändert, oder (nach Entfernen eines Benutzers) neu und an uns versiegelt.
 	remote := &Vault{dek: v.dek}
 	if err := remote.decryptData(f); err != nil {
-		i := findSlot(h.Users, v.user)
+		i := findSlot(h.Users, v.slotName())
 		if i < 0 {
 			return false, ErrUserRemoved
 		}
-		dek, err := openSealed(v.priv, h.Users[i].DEK, aadDEK(v.user))
+		dek, err := openSealed(v.priv, h.Users[i].DEK, aadDEK(v.slotName()))
 		if err != nil {
 			return false, ErrChangedElsewhere
 		}
@@ -61,6 +61,9 @@ func (v *Vault) Refresh() (changed bool, err error) {
 		ownBefore = *own
 	}
 	v.slots = mergeSlots(v.slots, h.Users, v.Data.Deleted)
+	if h.AD != nil && (v.ad == nil || h.AD.ChangedAt.After(v.ad.ChangedAt)) {
+		v.ad = h.AD
+	}
 	own = v.ownSlot()
 	if own == nil {
 		return false, ErrUserRemoved

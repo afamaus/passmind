@@ -24,13 +24,15 @@ type Slot struct {
 	DEK        SealedKey `json:"dek"`
 	MFA        *Box      `json:"mfa,omitempty"`
 	MustChange bool      `json:"mustChange,omitempty"`
+	Group      bool      `json:"group,omitempty"` // Zugang der AD-Gruppe; Schlüssel liegt in der .adkey-Datei
 	ChangedAt  time.Time `json:"changedAt"`
 }
 
 type header struct {
-	Version int    `json:"version"`
-	Cipher  string `json:"cipher"`
-	Users   []Slot `json:"users"`
+	Version int       `json:"version"`
+	Cipher  string    `json:"cipher"`
+	Users   []Slot    `json:"users"`
+	AD      *ADConfig `json:"ad,omitempty"`
 }
 
 type file struct {
@@ -90,6 +92,7 @@ type LoginInfo struct {
 	KeyFileUsers  []string `json:"keyFileUsers"`  // Benutzer, die eine Schlüsseldatei brauchen
 	KeyFileNeeded bool     `json:"keyFileNeeded"` // Format 1: ob eine Schlüsseldatei verlangt wird
 	Legacy        bool     `json:"legacy"`
+	ADDomain      string   `json:"adDomain,omitempty"` // gesetzt, wenn AD-Anmeldung eingerichtet ist
 }
 
 // ReadLoginInfo liest die Benutzernamen aus dem Kopf (ohne zu entschlüsseln).
@@ -110,6 +113,9 @@ func ReadLoginInfo(path string) (LoginInfo, error) {
 		return LoginInfo{Users: []string{}, KeyFileUsers: []string{}, KeyFileNeeded: hv.KeyFileNeeded, Legacy: true}, nil
 	}
 	info := LoginInfo{Users: []string{}, KeyFileUsers: []string{}}
+	if h.AD != nil && h.AD.Enabled() {
+		info.ADDomain = h.AD.Domain
+	}
 	for _, s := range h.Users {
 		info.Users = append(info.Users, s.User)
 		if s.KeyFile {
