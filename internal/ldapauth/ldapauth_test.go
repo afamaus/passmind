@@ -34,3 +34,17 @@ func TestEmptyPasswordRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCipherSuitesIncludeLegacyRSA(t *testing.T) {
+	want := map[uint16]bool{0x009c: false, 0x009d: false, 0xc027: false} // RSA-AES-GCM, ECDHE-RSA-AES-CBC-SHA256
+	for _, id := range cipherSuites() {
+		if _, ok := want[id]; ok {
+			want[id] = true
+		}
+	}
+	for id, ok := range want {
+		if !ok {
+			t.Errorf("Verfahren %#04x fehlt", id)
+		}
+	}
+}
