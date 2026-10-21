@@ -6,19 +6,20 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"passmind/internal/vault"
 )
 
-// Spaltennamen verschiedener Programme (Passwordstate, KeePass, Bitwarden, eigener Export).
+// Spaltennamen verschiedener Programme (Passwordstate, KeePass 1.x/2.x, KeePassXC, Bitwarden, eigener Export).
 var csvColumns = map[string][]string{
 	"folder":   {"folder", "group", "grouping", "passwordlist", "password list", "path", "ordner"},
 	"title":    {"title", "name", "account", "titel"},
-	"username": {"username", "user name", "login", "login_username", "user", "benutzer", "benutzername"},
+	"username": {"username", "user name", "login name", "loginname", "login", "login_username", "user", "user_name", "benutzer", "benutzername", "anmeldename"},
 	"password": {"password", "login_password", "passwort", "kennwort"},
-	"url":      {"url", "web site", "website", "login_uri", "uri"},
+	"url":      {"url", "web site", "website", "login_uri", "uri", "webseite", "adresse"},
 	"notes":    {"notes", "note", "comment", "comments", "notizen"},
 	"desc":     {"description", "beschreibung"},
 	"tags":     {"tags", "tag"},
@@ -72,17 +73,26 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, v *vault.V
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	n, err := importCSV(v, req.CSV, req.FolderID)
+	res, err := importCSV(v, req.CSV, req.FolderID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if s.save(w, v) {
-		writeJSON(w, map[string]int{"imported": n})
+		writeJSON(w, res)
 	}
 }
 
-func importCSV(v *vault.Vault, data, defaultFolder string) (int, error) {
+// importResult meldet, wie viele Einträge übernommen wurden und welche Spalten wohin gingen,
+// damit man in der Oberfläche sieht, wenn eine Spalte nicht erkannt wurde.
+type importResult struct {
+	Imported int               `json:"imported"`
+	Columns  map[string]string `json:"columns"` // Feld -> Spaltenname aus der Datei
+	Ignored  []string          `json:"ignored"`
+}
+
+func importCSV(v *vault.Vault, data, defaultFolder string) (importResult, error) {
+	res := importResult{Columns: map[string]string{}, Ignored: []string{}}
 	data = strings.TrimPrefix(data, "\uFEFF")
 	cr := csv.NewReader(strings.NewReader(data))
 	cr.FieldsPerRecord = -1
@@ -93,23 +103,25 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (int, error) {
 	}
 	header, err := cr.Read()
 	if err != nil {
-		return 0, errInvalidCSV
+		return res, errInvalidCSV
 	}
 	idx := map[string]int{}
-	for i, h := range header {
-		h = strings.ToLower(strings.TrimSpace(h))
+	for i, raw := range header {
+		h := strings.ToLower(strings.TrimSpace(raw))
+		used := false
 		for field, names := range csvColumns {
-			for _, n := range names {
-				if h == n {
-					if _, seen := idx[field]; !seen {
-						idx[field] = i
-					}
-				}
+			if _, seen := idx[field]; !seen && slices.Contains(names, h) {
+				idx[field] = i
+				res.Columns[field] = strings.TrimSpace(raw)
+				used = true
 			}
+		}
+		if !used && h != "" {
+			res.Ignored = append(res.Ignored, strings.TrimSpace(raw))
 		}
 	}
 	if _, ok := idx["password"]; !ok {
-		return 0, errNoPasswordColumn
+		return res, errNoPasswordColumn
 	}
 	get := func(rec []string, field string) string {
 		i, ok := idx[field]
@@ -118,14 +130,13 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (int, error) {
 		}
 		return strings.TrimSpace(rec[i])
 	}
-	count := 0
 	for {
 		rec, err := cr.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return count, errInvalidCSV
+			return res, errInvalidCSV
 		}
 		title := get(rec, "title")
 		if title == "" {
@@ -143,7 +154,12 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (int, error) {
 		}
 		folder := defaultFolder
 		if p := get(rec, "folder"); p != "" {
-			folder = v.FolderByPath(strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }))
+			parts := strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' })
+			// KeePassXC schreibt die oberste Gruppe "Root" mit, die braucht es hier nicht.
+			if len(parts) > 1 && strings.EqualFold(parts[0], "Root") {
+				parts = parts[1:]
+			}
+			folder = v.FolderByPath(parts)
 		}
 		var tags []string
 		for _, t := range tagSplit.Split(get(rec, "tags"), -1) {
@@ -160,9 +176,9 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (int, error) {
 			Notes:    notes,
 			Tags:     tags,
 		})
-		count++
+		res.Imported++
 	}
-	return count, nil
+	return res, nil
 }
 
 type importError string
