@@ -1,13 +1,16 @@
 package vault
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -27,57 +30,77 @@ type HistoryItem struct {
 
 // Entry ist ein einzelner Passwort-Eintrag.
 type Entry struct {
-	ID       string        `json:"id"`
-	FolderID string        `json:"folderId,omitempty"`
-	Title    string        `json:"title"`
-	Username string        `json:"username"`
-	Password string        `json:"password"`
-	URL      string        `json:"url"`
-	Notes    string        `json:"notes"`
-	Tags     []string      `json:"tags"`
-	Created  time.Time     `json:"created"`
-	Updated  time.Time     `json:"updated"`
-	History  []HistoryItem `json:"history,omitempty"`
+	ID        string        `json:"id"`
+	FolderID  string        `json:"folderId,omitempty"`
+	Title     string        `json:"title"`
+	Username  string        `json:"username"`
+	Password  string        `json:"password"`
+	URL       string        `json:"url"`
+	Notes     string        `json:"notes"`
+	Tags      []string      `json:"tags"`
+	Created   time.Time     `json:"created"`
+	Updated   time.Time     `json:"updated"`
+	UpdatedBy string        `json:"updatedBy,omitempty"`
+	History   []HistoryItem `json:"history,omitempty"`
 }
 
-// MFA enthält das TOTP-Geheimnis und die gehashten Wiederherstellungscodes.
+// MFA enthält das TOTP-Geheimnis und die gehashten Wiederherstellungscodes eines Benutzers.
+// Sie liegen verschlüsselt im Slot des Benutzers, nicht in den gemeinsamen Daten.
 type MFA struct {
 	TOTPSecret    string    `json:"totpSecret"`
 	RecoveryCodes []string  `json:"recoveryCodes"` // SHA-256 als Hex
 	ChangedAt     time.Time `json:"changedAt,omitempty"`
 }
 
-// Settings sind Benutzereinstellungen, die mit im Tresor gespeichert werden.
+// Settings sind Einstellungen, die mit im Tresor gespeichert werden.
 type Settings struct {
 	AutoLockMinutes  int       `json:"autoLockMinutes"`
 	ClipboardSeconds int       `json:"clipboardSeconds"`
 	ChangedAt        time.Time `json:"changedAt,omitempty"`
 }
 
-// Tombstone merkt sich gelöschte Einträge und Ordner, damit das Zusammenführen
+// Tombstone merkt sich gelöschte Einträge, Ordner und Benutzer, damit das Zusammenführen
 // mit einer auf einem anderen Gerät geänderten Fassung sie nicht wieder auferstehen lässt.
 type Tombstone struct {
 	ID string    `json:"id"`
 	At time.Time `json:"at"`
 }
 
-// Data ist der komplette entschlüsselte Inhalt des Tresors.
-type Data struct {
-	Folders  []Folder    `json:"folders"`
-	Entries  []Entry     `json:"entries"`
-	MFA      MFA         `json:"mfa"`
-	Settings Settings    `json:"settings"`
-	Deleted  []Tombstone `json:"deleted,omitempty"`
+// Rollen
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
+// UserInfo sind die für alle sichtbaren Angaben zu einem Benutzer.
+type UserInfo struct {
+	Name      string    `json:"name"`
+	Role      string    `json:"role"`
+	Created   time.Time `json:"created"`
+	ChangedAt time.Time `json:"changedAt"`
 }
 
-// Vault ist ein geöffneter (entschlüsselter) Tresor.
+// Data ist der komplette entschlüsselte, gemeinsame Inhalt des Tresors.
+type Data struct {
+	Folders   []Folder    `json:"folders"`
+	Entries   []Entry     `json:"entries"`
+	Users     []UserInfo  `json:"users"`
+	Settings  Settings    `json:"settings"`
+	Deleted   []Tombstone `json:"deleted,omitempty"`
+	LegacyMFA *MFA        `json:"mfa,omitempty"` // nur Format 1
+}
+
+// Vault ist ein für einen Benutzer geöffneter (entschlüsselter) Tresor.
 type Vault struct {
-	path          string
-	key           []byte
-	kdf           KDFParams
-	keyFileNeeded bool
-	lastHash      [32]byte // Hash der Datei, wie wir sie zuletzt gelesen oder geschrieben haben
-	Data          Data
+	path     string
+	dek      []byte // Datenschlüssel, mit dem Data verschlüsselt ist
+	slots    []Slot
+	user     string
+	priv     *ecdh.PrivateKey
+	kek      []byte // aus dem Passwort abgeleitet; nil, wenn das Passwort anderswo geändert wurde
+	mfa      *MFA
+	lastHash [32]byte // Hash der Datei, wie wir sie zuletzt gelesen oder geschrieben haben
+	Data     Data
 }
 
 const maxHistory = 20
@@ -95,66 +118,203 @@ func Exists(path string) bool {
 	return err == nil
 }
 
-// NeedsKeyFile liest den Tresorkopf und meldet, ob eine Schlüsseldatei verlangt wird.
-func NeedsKeyFile(path string) (bool, error) {
-	raw, err := os.ReadFile(path)
+func newSlot(user, password string, keyFile []byte, mustChange bool) (Slot, *ecdh.PrivateKey, []byte, error) {
+	kdf, err := defaultKDF()
 	if err != nil {
-		return false, err
+		return Slot{}, nil, nil, err
 	}
-	h, _, err := readHeader(raw)
-	return h.KeyFileNeeded, err
+	kek, err := deriveKey(password, keyFile, kdf)
+	if err != nil {
+		return Slot{}, nil, nil, err
+	}
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return Slot{}, nil, nil, err
+	}
+	pb, err := sealBox(kek, priv.Bytes(), aadPriv(user))
+	if err != nil {
+		return Slot{}, nil, nil, err
+	}
+	return Slot{
+		User: user, KDF: kdf, KeyFile: len(keyFile) > 0, Pub: priv.PublicKey().Bytes(), Priv: pb,
+		MustChange: mustChange, ChangedAt: time.Now().UTC(),
+	}, priv, kek, nil
 }
 
-// Create legt einen neuen Tresor an und speichert ihn sofort.
-func Create(path, password string, keyFile []byte, mfa MFA) (*Vault, error) {
+func setSlotMFA(s *Slot, kek []byte, m *MFA) error {
+	if m == nil {
+		s.MFA = nil
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	box, err := sealBox(kek, b, aadMFA(s.User))
+	clear(b)
+	if err != nil {
+		return err
+	}
+	s.MFA = &box
+	return nil
+}
+
+// Create legt einen neuen Tresor mit einem ersten Benutzer (Admin) an und speichert ihn sofort.
+func Create(path, user, password string, keyFile []byte, mfa MFA) (*Vault, error) {
 	if Exists(path) {
 		return nil, errors.New("an diesem Ort existiert bereits ein Tresor")
 	}
-	kdf, err := defaultKDF()
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return nil, errors.New("Benutzername fehlt")
+	}
+	slot, priv, kek, err := newSlot(user, password, keyFile, false)
 	if err != nil {
 		return nil, err
 	}
-	key, err := deriveKey(password, keyFile, kdf)
-	if err != nil {
+	if err := setSlotMFA(&slot, kek, &mfa); err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	v := &Vault{
-		path:          path,
-		key:           key,
-		kdf:           kdf,
-		keyFileNeeded: len(keyFile) > 0,
+		path: path, dek: randomKey(), slots: []Slot{slot}, user: user, priv: priv, kek: kek, mfa: &mfa,
 		Data: Data{
-			Folders:  []Folder{{ID: NewID(), Name: "Allgemein"}},
+			Folders:  []Folder{{ID: NewID(), Name: "Allgemein", Updated: now}},
 			Entries:  []Entry{},
-			MFA:      mfa,
+			Users:    []UserInfo{{Name: user, Role: RoleAdmin, Created: now, ChangedAt: now}},
 			Settings: Settings{AutoLockMinutes: 5, ClipboardSeconds: 20},
 		},
 	}
-	return v, v.Save()
+	return v, v.write()
 }
 
-// Open entschlüsselt einen vorhandenen Tresor.
-func Open(path, password string, keyFile []byte) (*Vault, error) {
+// Open entschlüsselt einen vorhandenen Tresor für einen Benutzer. Ist user leer und hat der
+// Tresor nur einen Benutzer, wird dieser genommen. Die MFA-Daten des Benutzers werden mitgeliefert
+// (nil, wenn er noch keine eingerichtet hat). Tresore im Format 1 werden dabei übernommen.
+func Open(path, user, password string, keyFile []byte) (*Vault, *MFA, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	pt, key, h, err := open(raw, password, keyFile)
+	ver, h, f, err := parse(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	v := &Vault{path: path, key: key, kdf: h.KDF, keyFileNeeded: h.KeyFileNeeded, lastHash: sha256.Sum256(raw)}
-	if err := json.Unmarshal(pt, &v.Data); err != nil {
-		return nil, errors.New("Tresorinhalt ist beschädigt")
+	if ver == 1 {
+		return migrateV1(path, raw, user, password, keyFile)
 	}
+	i := slotFor(h.Users, user)
+	if i < 0 {
+		return nil, nil, ErrBadCredentials
+	}
+	slot := h.Users[i]
+	if slot.KeyFile && len(keyFile) == 0 {
+		return nil, nil, ErrBadCredentials
+	}
+	if !slot.KeyFile {
+		keyFile = nil
+	}
+	kek, err := deriveKey(password, keyFile, slot.KDF)
+	if err != nil {
+		return nil, nil, err
+	}
+	pb, err := openBox(kek, slot.Priv, aadPriv(slot.User))
+	if err != nil {
+		return nil, nil, ErrBadCredentials
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(pb)
+	clear(pb)
+	if err != nil {
+		return nil, nil, ErrBadCredentials
+	}
+	dek, err := openSealed(priv, slot.DEK, aadDEK(slot.User))
+	if err != nil {
+		return nil, nil, ErrBadCredentials
+	}
+	v := &Vault{path: path, dek: dek, slots: h.Users, user: slot.User, priv: priv, kek: kek, lastHash: sha256.Sum256(raw)}
+	if err := v.decryptData(f); err != nil {
+		return nil, nil, err
+	}
+	if slot.MFA != nil {
+		mb, err := openBox(kek, *slot.MFA, aadMFA(slot.User))
+		if err != nil {
+			return nil, nil, ErrBadCredentials
+		}
+		var m MFA
+		err = json.Unmarshal(mb, &m)
+		clear(mb)
+		if err != nil {
+			return nil, nil, errors.New("MFA-Daten sind beschädigt")
+		}
+		v.mfa = &m
+	}
+	return v, v.MFA(), nil
+}
+
+func (v *Vault) decryptData(f file) error {
+	pt, err := openBox(v.dek, f.Data, f.Header)
+	if err != nil {
+		return ErrBadCredentials
+	}
+	var d Data
+	err = json.Unmarshal(pt, &d)
 	clear(pt)
-	if v.Data.Settings.AutoLockMinutes == 0 {
-		v.Data.Settings.AutoLockMinutes = 5
+	if err != nil {
+		return errors.New("Tresorinhalt ist beschädigt")
 	}
-	if v.Data.Settings.ClipboardSeconds == 0 {
-		v.Data.Settings.ClipboardSeconds = 20
+	if d.Settings.AutoLockMinutes == 0 {
+		d.Settings.AutoLockMinutes = 5
 	}
-	return v, nil
+	if d.Settings.ClipboardSeconds == 0 {
+		d.Settings.ClipboardSeconds = 20
+	}
+	if d.Entries == nil {
+		d.Entries = []Entry{}
+	}
+	v.Data = d
+	return nil
+}
+
+// migrateV1 übernimmt einen Tresor aus Format 1. Der bisherige Zugang wird zum ersten Admin.
+func migrateV1(path string, raw []byte, user, password string, keyFile []byte) (*Vault, *MFA, error) {
+	d, err := openV1(raw, password, keyFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	user = strings.TrimSpace(user)
+	if user == "" {
+		user = "admin"
+	}
+	var hv headerV1
+	var ff fileV1
+	json.Unmarshal(raw, &ff)
+	json.Unmarshal([]byte(ff.Header), &hv)
+	if !hv.KeyFileNeeded {
+		keyFile = nil
+	}
+	slot, priv, kek, err := newSlot(user, password, keyFile, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	mfa := d.LegacyMFA
+	if mfa == nil {
+		mfa = &MFA{}
+	}
+	if err := setSlotMFA(&slot, kek, mfa); err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UTC()
+	d.LegacyMFA = nil
+	d.Users = []UserInfo{{Name: user, Role: RoleAdmin, Created: now, ChangedAt: now}}
+	v := &Vault{path: path, dek: randomKey(), slots: []Slot{slot}, user: user, priv: priv, kek: kek, mfa: mfa, Data: d}
+	if err := os.WriteFile(path+".v1.bak", raw, 0o600); err != nil {
+		return nil, nil, fmt.Errorf("Sicherung des alten Tresors fehlgeschlagen: %w", err)
+	}
+	v.lastHash = sha256.Sum256(raw)
+	if err := v.write(); err != nil {
+		return nil, nil, err
+	}
+	return v, v.MFA(), nil
 }
 
 // Save verschlüsselt den Tresor und schreibt ihn atomar. Hat ein anderes Gerät die Datei
@@ -168,12 +328,27 @@ func (v *Vault) Save() error {
 }
 
 func (v *Vault) write() error {
+	for i := range v.slots {
+		s, err := sealTo(v.slots[i].Pub, v.dek, aadDEK(v.slots[i].User))
+		if err != nil {
+			return err
+		}
+		v.slots[i].DEK = s
+	}
+	hb, err := json.Marshal(header{Version: formatVersion, Cipher: "aes-256-gcm", Users: v.slots})
+	if err != nil {
+		return err
+	}
 	pt, err := json.Marshal(v.Data)
 	if err != nil {
 		return err
 	}
-	out, err := seal(v.key, pt, v.keyFileNeeded, v.kdf)
+	box, err := sealBox(v.dek, pt, string(hb))
 	clear(pt)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(file{Header: string(hb), Data: box}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -228,37 +403,117 @@ func (v *Vault) MoveTo(path string) error {
 	return nil
 }
 
-// ChangeCredentials setzt ein neues Master-Passwort und/oder eine neue Schlüsseldatei (nil = keine).
+// User liefert den angemeldeten Benutzer.
+func (v *Vault) User() string { return v.user }
+
+// Role liefert die Rolle des angemeldeten Benutzers.
+func (v *Vault) Role() string {
+	for _, u := range v.Data.Users {
+		if strings.EqualFold(u.Name, v.user) {
+			return u.Role
+		}
+	}
+	return RoleUser
+}
+
+// IsAdmin meldet, ob der angemeldete Benutzer Benutzer verwalten darf.
+func (v *Vault) IsAdmin() bool { return v.Role() == RoleAdmin }
+
+func (v *Vault) ownSlot() *Slot {
+	if i := findSlot(v.slots, v.user); i >= 0 {
+		return &v.slots[i]
+	}
+	return nil
+}
+
+// MustChange meldet, ob der Benutzer noch mit einem Startpasswort angemeldet ist.
+func (v *Vault) MustChange() bool {
+	s := v.ownSlot()
+	return s != nil && s.MustChange
+}
+
+// MFA liefert eine Kopie der MFA-Daten des angemeldeten Benutzers (nil = nicht eingerichtet).
+func (v *Vault) MFA() *MFA {
+	if v.mfa == nil || v.mfa.TOTPSecret == "" {
+		return nil
+	}
+	m := *v.mfa
+	m.RecoveryCodes = append([]string{}, v.mfa.RecoveryCodes...)
+	return &m
+}
+
+var errReLogin = errors.New("Dein Passwort wurde auf einem anderen Gerät geändert. Bitte sperren und neu anmelden.")
+
+// SetMFA speichert neue MFA-Daten für den angemeldeten Benutzer.
+func (v *Vault) SetMFA(m MFA) error {
+	if _, err := v.Refresh(); err != nil {
+		return err
+	}
+	s := v.ownSlot()
+	if s == nil || v.kek == nil {
+		return errReLogin
+	}
+	m.ChangedAt = time.Now().UTC()
+	old := *s
+	if err := setSlotMFA(s, v.kek, &m); err != nil {
+		return err
+	}
+	s.ChangedAt = m.ChangedAt
+	if err := v.write(); err != nil {
+		*s = old
+		return err
+	}
+	v.mfa = &m
+	return nil
+}
+
+// ChangeCredentials setzt für den angemeldeten Benutzer ein neues Passwort und/oder eine neue
+// Schlüsseldatei (nil = keine).
 func (v *Vault) ChangeCredentials(password string, keyFile []byte) error {
+	if _, err := v.Refresh(); err != nil {
+		return err
+	}
+	s := v.ownSlot()
+	if s == nil {
+		return ErrUserRemoved
+	}
 	kdf, err := defaultKDF()
 	if err != nil {
 		return err
 	}
-	key, err := deriveKey(password, keyFile, kdf)
+	kek, err := deriveKey(password, keyFile, kdf)
 	if err != nil {
 		return err
 	}
-	// Änderungen anderer Geräte noch mit dem alten Schlüssel übernehmen, dann neu verschlüsseln.
-	if _, err := v.Refresh(); err != nil {
+	old := *s
+	pb, err := sealBox(kek, v.priv.Bytes(), aadPriv(s.User))
+	if err != nil {
 		return err
 	}
-	oldKey, oldKDF, oldKF := v.key, v.kdf, v.keyFileNeeded
-	v.key, v.kdf, v.keyFileNeeded = key, kdf, len(keyFile) > 0
+	s.KDF, s.KeyFile, s.Priv, s.MustChange, s.ChangedAt = kdf, len(keyFile) > 0, pb, false, time.Now().UTC()
+	if err := setSlotMFA(s, kek, v.mfa); err != nil {
+		*s = old
+		return err
+	}
 	if err := v.write(); err != nil {
-		v.key, v.kdf, v.keyFileNeeded = oldKey, oldKDF, oldKF
+		*s = old
 		return err
 	}
-	clear(oldKey)
+	v.kek = kek
 	return nil
 }
 
-// KeyFileNeeded meldet, ob dieser Tresor mit einer Schlüsseldatei geschützt ist.
-func (v *Vault) KeyFileNeeded() bool { return v.keyFileNeeded }
+// KeyFileNeeded meldet, ob der angemeldete Benutzer eine Schlüsseldatei verwendet.
+func (v *Vault) KeyFileNeeded() bool {
+	s := v.ownSlot()
+	return s != nil && s.KeyFile
+}
 
-// Close entfernt den Schlüssel aus dem Speicher.
+// Close entfernt die Schlüssel aus dem Speicher.
 func (v *Vault) Close() {
-	clear(v.key)
-	v.key = nil
+	clear(v.dek)
+	clear(v.kek)
+	v.dek, v.kek, v.priv, v.mfa = nil, nil, nil, nil
 	v.Data = Data{}
 }
 
@@ -281,12 +536,12 @@ func (v *Vault) UpsertEntry(e Entry) Entry {
 				e.History = e.History[:maxHistory]
 			}
 		}
-		e.Updated = now
+		e.Updated, e.UpdatedBy = now, v.user
 		*old = e
 		return e
 	}
 	e.ID = NewID()
-	e.Created, e.Updated = now, now
+	e.Created, e.Updated, e.UpdatedBy = now, now, v.user
 	e.History = nil
 	v.Data.Entries = append(v.Data.Entries, e)
 	return e

@@ -1,7 +1,6 @@
 package vault
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -9,11 +8,11 @@ import (
 // Zwei Geräte öffnen denselben Tresor (z. B. auf einem NAS) und ändern ihn gleichzeitig.
 func TestTwoDevicesMerge(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "nas.vault")
-	if _, err := Create(p, "pw-pw-pw-pw", nil, MFA{}); err != nil {
+	if _, err := Create(p, "a", "pw-pw-pw-pw", nil, MFA{TOTPSecret: "S"}); err != nil {
 		t.Fatal(err)
 	}
-	a, _ := Open(p, "pw-pw-pw-pw", nil)
-	b, _ := Open(p, "pw-pw-pw-pw", nil)
+	a, _, _ := Open(p, "a", "pw-pw-pw-pw", nil)
+	b, _, _ := Open(p, "a", "pw-pw-pw-pw", nil)
 
 	shared := a.UpsertEntry(Entry{Title: "Gemeinsam", Password: "1"})
 	if err := a.Save(); err != nil {
@@ -52,7 +51,7 @@ func TestTwoDevicesMerge(t *testing.T) {
 	b.UpsertEntry(e)
 	a.Save()
 	b.Save()
-	c, err := Open(p, "pw-pw-pw-pw", nil)
+	c, _, err := Open(p, "a", "pw-pw-pw-pw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,32 +60,41 @@ func TestTwoDevicesMerge(t *testing.T) {
 	}
 }
 
-func TestCredentialsChangedElsewhere(t *testing.T) {
+func TestPasswordChangedElsewhere(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "nas.vault")
-	Create(p, "pw-pw-pw-pw", nil, MFA{})
-	a, _ := Open(p, "pw-pw-pw-pw", nil)
-	b, _ := Open(p, "pw-pw-pw-pw", nil)
+	Create(p, "a", "pw-pw-pw-pw", nil, MFA{TOTPSecret: "S"})
+	a, _, _ := Open(p, "a", "pw-pw-pw-pw", nil)
+	b, _, _ := Open(p, "a", "pw-pw-pw-pw", nil)
+	// Passwortwechsel auf Gerät A: Gerät B kann weiter speichern (gleiches Schlüsselpaar),
+	// braucht für MFA-Änderungen aber eine neue Anmeldung.
 	if err := a.ChangeCredentials("neues-passwort", nil); err != nil {
 		t.Fatal(err)
 	}
 	b.UpsertEntry(Entry{Title: "x"})
-	if err := b.Save(); !errors.Is(err, ErrChangedElsewhere) {
-		t.Fatalf("erwartet ErrChangedElsewhere, bekam %v", err)
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := Open(p, "neues-passwort", nil); err != nil {
-		t.Fatal("Datei von A wurde überschrieben")
+	if err := b.SetMFA(MFA{TOTPSecret: "NEU"}); err == nil {
+		t.Fatal("MFA-Änderung mit veraltetem Passwort-Schlüssel möglich")
+	}
+	c, _, err := Open(p, "a", "neues-passwort", nil)
+	if err != nil || len(c.Data.Entries) != 1 {
+		t.Fatalf("Datei: %v", err)
+	}
+	if _, _, err := Open(p, "a", "pw-pw-pw-pw", nil); err == nil {
+		t.Fatal("altes Passwort funktioniert noch")
 	}
 }
 
 func TestMoveTo(t *testing.T) {
 	dir := t.TempDir()
-	v, _ := Create(filepath.Join(dir, "a.vault"), "pw-pw-pw-pw", nil, MFA{})
+	v, _ := Create(filepath.Join(dir, "a.vault"), "a", "pw-pw-pw-pw", nil, MFA{})
 	v.UpsertEntry(Entry{Title: "x"})
 	v.Save()
 	if err := v.MoveTo(filepath.Join(dir, "b.vault")); err != nil {
 		t.Fatal(err)
 	}
-	w, err := Open(filepath.Join(dir, "b.vault"), "pw-pw-pw-pw", nil)
+	w, _, err := Open(filepath.Join(dir, "b.vault"), "a", "pw-pw-pw-pw", nil)
 	if err != nil || len(w.Data.Entries) != 1 {
 		t.Fatalf("verschobener Tresor: %v", err)
 	}

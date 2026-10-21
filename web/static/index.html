@@ -16,12 +16,16 @@
 <section id="view-setup" class="view auth hidden">
   <div class="card">
     <h1><img src="logo.png" alt="" class="logo"> PassMind einrichten</h1>
-    <ol class="steps"><li data-step="1">Master-Passwort</li><li data-step="2">Authenticator</li><li data-step="3">Wiederherstellung</li></ol>
+    <ol class="steps"><li data-step="1">Zugang</li><li data-step="2">Authenticator</li><li data-step="3">Wiederherstellung</li></ol>
 
     <form id="setup-step1" class="step">
       <p class="warn hidden" id="setup-missing">Hier lag früher ein Tresor, er ist aber gerade nicht erreichbar (z.&nbsp;B. NAS ausgeschaltet oder Laufwerk nicht verbunden). Lege nur dann einen neuen an, wenn du das wirklich willst.</p>
       <p class="muted">Der Tresor wird hier gespeichert:<br><code id="setup-path" class="break"></code><br>
         <a href="#" class="choose-vault">Anderen Speicherort oder vorhandenen Tresor wählen</a></p>
+      <label>Dein Benutzername
+        <input type="text" id="setup-user" autocomplete="username" required maxlength="64" placeholder="z. B. rene">
+      </label>
+      <small class="muted">Du wirst Admin und kannst später weitere Benutzer anlegen. Jeder bekommt ein eigenes Passwort und eine eigene Authenticator-App.</small>
       <label>Master-Passwort
         <input type="password" id="setup-pw" autocomplete="new-password" required minlength="10">
       </label>
@@ -74,7 +78,12 @@
     <p class="muted">Tresor: <code id="unlock-path" class="break"></code><br>
       <a href="#" class="choose-vault">Anderen Tresor öffnen</a></p>
     <div id="unlock-recent" class="recent hidden"></div>
-    <label>Master-Passwort
+    <p class="muted hidden" id="unlock-legacy">Dieser Tresor stammt aus einer älteren PassMind-Version. Nach dem Entsperren wird er umgestellt und du bist als Benutzer „admin“ angemeldet. Eine Sicherung bleibt als <code>.v1.bak</code> liegen.</p>
+    <label id="unlock-user-wrap">Benutzer
+      <input type="text" id="unlock-user" autocomplete="username" list="unlock-users" required>
+      <datalist id="unlock-users"></datalist>
+    </label>
+    <label>Passwort
       <input type="password" id="unlock-pw" autocomplete="current-password" required>
     </label>
     <label id="unlock-keyfile-wrap" class="hidden">Schlüsseldatei
@@ -92,12 +101,52 @@
   </form>
 </section>
 
+<!-- Erste Anmeldung eines Benutzers -->
+<section id="view-enroll" class="view auth hidden">
+  <div class="card">
+    <h1><img src="logo.png" alt="" class="logo"> Willkommen, <span id="enroll-user"></span></h1>
+    <form id="enroll-form">
+      <div id="enroll-pw-wrap">
+        <p class="muted">Du hast dich mit einem Startpasswort angemeldet. Lege jetzt dein eigenes Passwort fest. Nur du kennst es.</p>
+        <label>Neues Passwort
+          <input type="password" id="enroll-pw" autocomplete="new-password" minlength="10">
+        </label>
+        <div class="meter"><div id="enroll-meter"></div></div>
+        <small id="enroll-meter-text" class="muted"></small>
+        <label>Neues Passwort wiederholen
+          <input type="password" id="enroll-pw2" autocomplete="new-password">
+        </label>
+      </div>
+      <p>Richte deine Authenticator-App ein: QR-Code scannen (z.&nbsp;B. Microsoft Authenticator, Google Authenticator, Aegis, 2FAS).</p>
+      <img id="enroll-qr" class="qr" alt="QR-Code für die Authenticator-App">
+      <p class="muted">Oder Schlüssel manuell eingeben: <code id="enroll-secret" class="break"></code></p>
+      <label>6-stelliger Code aus der App
+        <input type="text" id="enroll-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+      </label>
+      <p class="error" id="enroll-error"></p>
+      <div class="row">
+        <button type="button" class="btn secondary" id="enroll-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Einrichten</button>
+      </div>
+    </form>
+    <div id="enroll-done" class="hidden">
+      <p><strong>Deine Wiederherstellungscodes</strong>: Damit kommst du hinein, wenn das Handy verloren geht. Jeder Code funktioniert einmal. Sicher und getrennt vom Tresor aufbewahren.</p>
+      <ul id="enroll-recovery" class="codes"></ul>
+      <div class="row">
+        <button type="button" class="btn secondary" id="enroll-copy-codes">Codes kopieren</button>
+        <button type="button" class="btn" id="enroll-finish">Gespeichert, weiter</button>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- Hauptansicht -->
 <section id="view-main" class="view hidden">
   <header class="topbar">
     <div class="brand"><img src="logo.png" alt="" class="logo"> <span>Pass<span class="mind">Mind</span></span></div>
     <input type="search" id="search" placeholder="Suchen (Titel, Benutzer, URL, Notizen, Tags) …" autocomplete="off">
     <nav>
+      <span class="whoami" id="whoami" title="Angemeldeter Benutzer"></span>
       <button class="btn secondary" id="btn-generator" title="Passwortgenerator">🎲 <span class="lbl">Generator</span></button>
       <button class="btn secondary" id="btn-settings" title="Einstellungen">⚙ <span class="lbl">Einstellungen</span></button>
       <button class="btn secondary" id="btn-theme" title="Hell/Dunkel umschalten">☀</button>
@@ -256,12 +305,33 @@
       <button type="button" class="btn secondary" id="s-move">Verschieben …</button>
     </div>
 
+    <div class="section" id="users-section">
+      <h3>Benutzer</h3>
+      <p class="muted">Alle Benutzer sehen alle Einträge. Jeder meldet sich mit eigenem Passwort und eigener Authenticator-App an. Neue Benutzer bekommen ein Startpasswort und richten beim ersten Anmelden ihr Passwort und ihre App selbst ein.</p>
+      <table class="users">
+        <thead><tr><th>Name</th><th>Rolle</th><th>Status</th><th class="actions"></th></tr></thead>
+        <tbody id="user-rows"></tbody>
+      </table>
+      <form id="user-add-form" class="row admin-only">
+        <input type="text" id="u-name" placeholder="Neuer Benutzer" maxlength="64" required autocomplete="off">
+        <select id="u-role"><option value="user">Benutzer</option><option value="admin">Admin</option></select>
+        <button type="submit" class="btn secondary">Anlegen</button>
+      </form>
+      <div id="u-start" class="startpw hidden">
+        <p>Startpasswort für <strong id="u-start-name"></strong> (wird nur jetzt angezeigt, bitte persönlich weitergeben):</p>
+        <div class="input-group">
+          <input type="text" id="u-start-pw" readonly class="mono">
+          <button type="button" class="icon" data-copy="u-start-pw" title="Kopieren">⧉</button>
+        </div>
+      </div>
+    </div>
+
     <form id="cred-form" class="section">
-      <h3>Master-Passwort / Schlüsseldatei ändern</h3>
-      <label>Aktuelles Master-Passwort <input type="password" id="c-current" autocomplete="current-password" required></label>
+      <h3>Eigenes Passwort / Schlüsseldatei ändern</h3>
+      <label>Aktuelles Passwort <input type="password" id="c-current" autocomplete="current-password" required></label>
       <label class="kf-current hidden">Aktuelle Schlüsseldatei <input type="file" id="c-current-kf"></label>
-      <label>Neues Master-Passwort <input type="password" id="c-new" autocomplete="new-password" required minlength="10"></label>
-      <label>Neues Master-Passwort wiederholen <input type="password" id="c-new2" autocomplete="new-password" required></label>
+      <label>Neues Passwort <input type="password" id="c-new" autocomplete="new-password" required minlength="10"></label>
+      <label>Neues Passwort wiederholen <input type="password" id="c-new2" autocomplete="new-password" required></label>
       <label>Neue Schlüsseldatei (leer lassen = keine Schlüsseldatei) <input type="file" id="c-new-kf"></label>
       <button type="submit" class="btn">Ändern</button>
     </form>
@@ -289,7 +359,7 @@
       <p class="muted">Import aus CSV (Passwordstate, KeePass, Bitwarden, Excel). Erkannt werden Spalten wie Title, UserName, Password, URL, Notes, Group/PasswordList.</p>
       <label>CSV-Datei importieren <input type="file" id="i-file" accept=".csv,text/csv"></label>
       <form id="export-form" class="row">
-        <input type="password" id="x-pw" placeholder="Master-Passwort zur Bestätigung" required autocomplete="current-password">
+        <input type="password" id="x-pw" placeholder="Dein Passwort zur Bestätigung" required autocomplete="current-password">
         <input type="file" id="x-kf" class="kf-current hidden" title="Schlüsseldatei">
         <button type="submit" class="btn secondary">Als CSV exportieren</button>
       </form>

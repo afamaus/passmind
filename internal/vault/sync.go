@@ -3,7 +3,6 @@ package vault
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -11,9 +10,9 @@ import (
 	"time"
 )
 
-// ErrChangedElsewhere bedeutet, dass auf einem anderen Gerät Master-Passwort oder
-// Schlüsseldatei geändert wurden. Der Tresor muss dann neu entsperrt werden.
-var ErrChangedElsewhere = errors.New("Master-Passwort oder Schlüsseldatei wurden auf einem anderen Gerät geändert. Bitte neu entsperren.")
+// ErrChangedElsewhere bedeutet, dass die Datei auf einem anderen Gerät so geändert wurde,
+// dass sie mit den Schlüsseln dieser Sitzung nicht mehr lesbar ist.
+var ErrChangedElsewhere = errors.New("Der Tresor wurde auf einem anderen Gerät neu verschlüsselt. Bitte neu anmelden.")
 
 const tombstoneTTL = 180 * 24 * time.Hour
 
@@ -31,26 +30,77 @@ func (v *Vault) Refresh() (changed bool, err error) {
 	if hash == v.lastHash {
 		return false, nil
 	}
-	h, ff, err := readHeader(raw)
+	ver, h, f, err := parse(raw)
 	if err != nil {
 		return false, err
 	}
-	if h.KeyFileNeeded != v.keyFileNeeded || !bytes.Equal(h.KDF.Salt, v.kdf.Salt) {
-		return false, ErrChangedElsewhere
+	if ver != formatVersion {
+		return false, errors.New("Auf dem Speicherort liegt ein Tresor im alten Format. Bitte alle Rechner auf die neue PassMind-Version aktualisieren.")
 	}
-	pt, err := decrypt(v.key, h, ff)
-	if err != nil {
-		return false, ErrChangedElsewhere
+	// Datenschlüssel: entweder unverändert, oder (nach Entfernen eines Benutzers) neu und an uns versiegelt.
+	remote := &Vault{dek: v.dek}
+	if err := remote.decryptData(f); err != nil {
+		i := findSlot(h.Users, v.user)
+		if i < 0 {
+			return false, ErrUserRemoved
+		}
+		dek, err := openSealed(v.priv, h.Users[i].DEK, aadDEK(v.user))
+		if err != nil {
+			return false, ErrChangedElsewhere
+		}
+		remote.dek = dek
+		if err := remote.decryptData(f); err != nil {
+			return false, ErrChangedElsewhere
+		}
+		v.dek = dek
 	}
-	var remote Data
-	err = json.Unmarshal(pt, &remote)
-	clear(pt)
-	if err != nil {
-		return false, errors.New("Tresorinhalt auf dem Speicherort ist beschädigt")
+	v.Data = Merge(v.Data, remote.Data)
+	own := v.ownSlot()
+	var ownBefore Slot
+	if own != nil {
+		ownBefore = *own
 	}
-	v.Data = Merge(v.Data, remote)
+	v.slots = mergeSlots(v.slots, h.Users, v.Data.Deleted)
+	own = v.ownSlot()
+	if own == nil {
+		return false, ErrUserRemoved
+	}
+	if own.ChangedAt.After(ownBefore.ChangedAt) && !bytes.Equal(own.KDF.Salt, ownBefore.KDF.Salt) {
+		v.kek = nil // Passwort wurde anderswo geändert
+	}
+	if !bytes.Equal(own.Pub, v.priv.PublicKey().Bytes()) {
+		return false, ErrChangedElsewhere // Zugang wurde vom Admin zurückgesetzt
+	}
 	v.lastHash = hash
 	return true, nil
+}
+
+func mergeSlots(local, remote []Slot, deleted []Tombstone) []Slot {
+	tomb := map[string]time.Time{}
+	for _, t := range deleted {
+		tomb[t.ID] = t.At
+	}
+	out := []Slot{}
+	seen := map[string]bool{}
+	add := func(s Slot) {
+		if t, ok := tomb[userTomb(s.User)]; ok && !s.ChangedAt.After(t) {
+			return
+		}
+		out = append(out, s)
+	}
+	for _, s := range local {
+		if i := findSlot(remote, s.User); i >= 0 && remote[i].ChangedAt.After(s.ChangedAt) {
+			s = remote[i]
+		}
+		seen[strings.ToLower(s.User)] = true
+		add(s)
+	}
+	for _, s := range remote {
+		if !seen[strings.ToLower(s.User)] {
+			add(s)
+		}
+	}
+	return out
 }
 
 // Merge führt zwei Fassungen eines Tresors zusammen. Pro Eintrag und Ordner gewinnt
@@ -71,10 +121,7 @@ func Merge(local, remote Data) Data {
 		return !ok || updated.After(t)
 	}
 
-	out := Data{MFA: local.MFA, Settings: local.Settings}
-	if remote.MFA.ChangedAt.After(local.MFA.ChangedAt) {
-		out.MFA = remote.MFA
-	}
+	out := Data{Settings: local.Settings}
 	if remote.Settings.ChangedAt.After(local.Settings.ChangedAt) {
 		out.Settings = remote.Settings
 	}
@@ -135,6 +182,28 @@ func Merge(local, remote Data) Data {
 	for i := range out.Entries {
 		if !exists[out.Entries[i].FolderID] {
 			out.Entries[i].FolderID = ""
+		}
+	}
+
+	// Benutzer (Rollen)
+	ru := map[string]UserInfo{}
+	for _, u := range remote.Users {
+		ru[strings.ToLower(u.Name)] = u
+	}
+	seen = map[string]bool{}
+	for _, u := range local.Users {
+		k := strings.ToLower(u.Name)
+		if r, ok := ru[k]; ok && r.ChangedAt.After(u.ChangedAt) {
+			u = r
+		}
+		seen[k] = true
+		if alive(userTomb(u.Name), u.ChangedAt) {
+			out.Users = append(out.Users, u)
+		}
+	}
+	for _, u := range remote.Users {
+		if !seen[strings.ToLower(u.Name)] && alive(userTomb(u.Name), u.ChangedAt) {
+			out.Users = append(out.Users, u)
 		}
 	}
 

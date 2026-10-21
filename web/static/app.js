@@ -166,20 +166,21 @@ function startSetup() {
   $('setup-path').textContent = status.path;
   $('setup-missing').classList.toggle('hidden', !status.missingKnown);
   setStep(1);
-  $('setup-pw').focus();
+  $('setup-user').focus();
 }
 
 bindMeter($('setup-pw'), $('setup-meter'), $('setup-meter-text'));
 
 $('setup-step1').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const pw = $('setup-pw').value, pw2 = $('setup-pw2').value;
+  const pw = $('setup-pw').value, pw2 = $('setup-pw2').value, user = $('setup-user').value.trim();
   $('setup-error1').textContent = '';
+  if (!user) { $('setup-error1').textContent = 'Bitte einen Benutzernamen angeben.'; return; }
   if (pw.length < 10) { $('setup-error1').textContent = 'Mindestens 10 Zeichen.'; return; }
   if (pw !== pw2) { $('setup-error1').textContent = 'Die Passwörter stimmen nicht überein.'; return; }
   try {
-    setupState = { password: pw, keyFile: await readFileB64($('setup-keyfile')) };
-    const t = await api('POST', 'setup/totp');
+    setupState = { user, password: pw, keyFile: await readFileB64($('setup-keyfile')) };
+    const t = await api('POST', 'setup/totp?user=' + encodeURIComponent(user));
     $('setup-qr').src = t.qr;
     $('setup-secret').textContent = t.secret.replace(/(.{4})/g, '$1 ').trim();
     setStep(2);
@@ -198,6 +199,7 @@ $('setup-step2').addEventListener('submit', async (ev) => {
   $('setup-error2').textContent = '';
   try {
     const r = await api('POST', 'setup', { ...setupState, code: $('setup-code').value });
+    rememberUser(setupState.user);
     setupState = { codes: r.recoveryCodes };
     $('setup-recovery').replaceChildren(...r.recoveryCodes.map((c) => el('li', {}, c)));
     setStep(3);
@@ -222,6 +224,22 @@ $('setup-done').addEventListener('click', () => {
 
 let useRecovery = false;
 
+function lastUser() {
+  try { return localStorage.getItem('pm-user') || ''; } catch { return ''; }
+}
+function rememberUser(u) {
+  try { localStorage.setItem('pm-user', u); } catch { /* egal */ }
+}
+
+function updateKeyFileField() {
+  const login = status.login || {};
+  const u = $('unlock-user').value.trim().toLowerCase();
+  const needs = login.legacy ? login.keyFileNeeded
+    : (login.keyFileUsers || []).some((x) => x.toLowerCase() === u);
+  $('unlock-keyfile-wrap').classList.toggle('hidden', !needs);
+}
+$('unlock-user').addEventListener('input', updateKeyFileField);
+
 async function showLocked(message) {
   closeAllDialogs();
   try { status = await api('GET', 'status'); } catch { /* bleibt beim alten Status */ }
@@ -233,11 +251,20 @@ async function showLocked(message) {
   $('unlock-recent').classList.toggle('hidden', others.length === 0);
   $('unlock-recent').replaceChildren(el('div', { class: 'label' }, 'Zuletzt verwendet:'),
     ...others.map((p) => el('a', { href: '#', onclick: (ev) => { ev.preventDefault(); selectVault(p); } }, p)));
-  $('unlock-keyfile-wrap').classList.toggle('hidden', !status.keyFileNeeded);
+  const login = status.login || { users: [] };
+  const users = login.users || [];
+  $('unlock-legacy').classList.toggle('hidden', !login.legacy);
+  $('unlock-user-wrap').classList.toggle('hidden', !!login.legacy);
+  $('unlock-user').required = !login.legacy;
+  $('unlock-users').replaceChildren(...users.map((u) => el('option', { value: u })));
+  const last = lastUser();
+  const known = users.find((u) => u.toLowerCase() === last.toLowerCase());
+  $('unlock-user').value = known || (users.length === 1 ? users[0] : '');
+  updateKeyFileField();
   $('unlock-pw').value = '';
   $('unlock-code').value = '';
   $('unlock-recovery').value = '';
-  $('unlock-pw').focus();
+  ($('unlock-user').value || login.legacy ? $('unlock-pw') : $('unlock-user')).focus();
   if (status.error) $('unlock-error').textContent = status.error;
 }
 
@@ -256,10 +283,13 @@ $('unlock-form').addEventListener('submit', async (ev) => {
   btn.textContent = 'Prüfe …';
   $('unlock-error').textContent = '';
   try {
-    const body = { password: $('unlock-pw').value, keyFile: await readFileB64($('unlock-keyfile')) };
+    const user = $('unlock-user').value.trim();
+    const body = { user, password: $('unlock-pw').value, keyFile: await readFileB64($('unlock-keyfile')) };
     if (useRecovery) body.recoveryCode = $('unlock-recovery').value; else body.code = $('unlock-code').value;
     const r = await api('POST', 'unlock', body);
     $('unlock-pw').value = '';
+    if (r.enroll) { rememberUser(r.user); startEnroll(r); return; }
+    if (user) rememberUser(user);
     await openMain();
     if (r.recoveryUsed) {
       toast(`Wiederherstellungscode verbraucht. Noch ${r.recoveryRemaining} übrig. Richte den Authenticator in den Einstellungen neu ein.`, false, 8000);
@@ -270,6 +300,65 @@ $('unlock-form').addEventListener('submit', async (ev) => {
     busy(btn, false);
     btn.textContent = 'Entsperren';
   }
+});
+
+// ---------- Erste Anmeldung ----------
+
+let enrollState = {};
+
+function startEnroll(r) {
+  enrollState = { mustChange: r.mustChange };
+  show('view-enroll');
+  $('enroll-user').textContent = r.user;
+  $('enroll-pw-wrap').classList.toggle('hidden', !r.mustChange);
+  $('enroll-qr').src = r.qr;
+  $('enroll-secret').textContent = r.secret.replace(/(.{4})/g, '$1 ').trim();
+  $('enroll-form').classList.remove('hidden');
+  $('enroll-done').classList.add('hidden');
+  $('enroll-error').textContent = '';
+  for (const id of ['enroll-pw', 'enroll-pw2', 'enroll-code']) $(id).value = '';
+  (r.mustChange ? $('enroll-pw') : $('enroll-code')).focus();
+}
+
+bindMeter($('enroll-pw'), $('enroll-meter'), $('enroll-meter-text'));
+
+$('enroll-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('enroll-error').textContent = '';
+  const pw = $('enroll-pw').value;
+  if (enrollState.mustChange) {
+    if (pw.length < 10) { $('enroll-error').textContent = 'Das neue Passwort braucht mindestens 10 Zeichen.'; return; }
+    if (pw !== $('enroll-pw2').value) { $('enroll-error').textContent = 'Die Passwörter stimmen nicht überein.'; return; }
+  }
+  const btn = ev.submitter;
+  busy(btn, true);
+  try {
+    const r = await api('POST', 'enroll', { newPassword: enrollState.mustChange ? pw : '', code: $('enroll-code').value });
+    enrollState = { codes: r.recoveryCodes };
+    $('enroll-pw').value = $('enroll-pw2').value = '';
+    $('enroll-recovery').replaceChildren(...r.recoveryCodes.map((c) => el('li', {}, c)));
+    $('enroll-form').classList.add('hidden');
+    $('enroll-done').classList.remove('hidden');
+  } catch (e) {
+    $('enroll-error').textContent = e.message;
+  } finally {
+    busy(btn, false);
+  }
+});
+
+$('enroll-cancel').addEventListener('click', async () => {
+  await api('POST', 'lock').catch(() => {});
+  enrollState = {};
+  showLocked();
+});
+
+$('enroll-copy-codes').addEventListener('click', () => {
+  navigator.clipboard.writeText(enrollState.codes.join('\n')).then(() => toast('Codes kopiert'));
+});
+
+$('enroll-finish').addEventListener('click', () => {
+  enrollState = {};
+  openMain();
 });
 
 // ---------- Hauptansicht ----------
@@ -287,6 +376,7 @@ async function openMain() {
 async function reload() {
   data = await api('GET', 'data');
   clipboardSeconds = data.settings.clipboardSeconds || 20;
+  $('whoami').textContent = '👤 ' + data.user + (data.role === 'admin' ? ' (Admin)' : '');
   if (currentFolder && !data.folders.some((f) => f.id === currentFolder)) currentFolder = '';
   renderTree();
   renderEntries();
@@ -483,7 +573,7 @@ async function openEntry(id) {
     el('button', { type: 'button', class: 'icon', title: 'Anzeigen', onclick: (ev) => { const c = ev.target.parentElement.querySelector('code'); c.textContent = c.textContent === h.password ? '••••••••' : h.password; } }, '👁'),
     el('button', { type: 'button', class: 'icon', title: 'Kopieren', onclick: () => copyText(h.password, 'Altes Passwort') }, '⧉'),
   )));
-  $('e-meta').textContent = id ? `Angelegt: ${new Date(e.created).toLocaleString('de-DE')} · Geändert: ${new Date(e.updated).toLocaleString('de-DE')}` : '';
+  $('e-meta').textContent = id ? `Angelegt: ${new Date(e.created).toLocaleString('de-DE')} · Geändert: ${new Date(e.updated).toLocaleString('de-DE')}${e.updatedBy ? ' von ' + e.updatedBy : ''}` : '';
   updateEntryMeter();
   $('dlg-entry').showModal();
   $('e-title').focus();
@@ -622,8 +712,68 @@ function openSettings() {
   $('mfa-reset-form').classList.remove('hidden');
   $('mfa-confirm-form').classList.add('hidden');
   $('m-recovery').classList.add('hidden');
+  $('u-start').classList.add('hidden');
+  for (const x of document.querySelectorAll('.admin-only')) x.classList.toggle('hidden', data.role !== 'admin');
+  loadUsers();
   $('dlg-settings').showModal();
 }
+
+const roleLabel = { admin: 'Admin', user: 'Benutzer' };
+
+function showStartPassword(name, pw) {
+  $('u-start-name').textContent = name;
+  $('u-start-pw').value = pw;
+  $('u-start').classList.remove('hidden');
+}
+
+async function userAction(fn) {
+  $('settings-error').textContent = '';
+  try {
+    await fn();
+    await loadUsers();
+  } catch (e) { $('settings-error').textContent = e.message; }
+}
+
+async function loadUsers() {
+  let r;
+  try { r = await api('GET', 'users'); } catch (e) { $('settings-error').textContent = e.message; return; }
+  const rows = r.users.map((u) => {
+    const me = u.name.toLowerCase() === r.me.toLowerCase();
+    const state = u.mustChange ? 'Wartet auf erste Anmeldung' : (u.mfa ? 'MFA eingerichtet' : 'MFA wird beim Anmelden eingerichtet');
+    const enc = encodeURIComponent(u.name);
+    const actions = [];
+    if (r.admin && !me) {
+      const other = u.role === 'admin' ? 'user' : 'admin';
+      actions.push(
+        el('button', { type: 'button', class: 'icon', title: `Zu ${roleLabel[other]} machen`, onclick: () => userAction(() => api('PUT', `users/${enc}/role`, { role: other })) }, u.role === 'admin' ? '⬇' : '⬆'),
+        el('button', { type: 'button', class: 'icon', title: 'Neues Startpasswort und MFA zurücksetzen (Passwort vergessen, Handy verloren)', onclick: () => {
+          if (!confirm(`${u.name} ein neues Startpasswort geben? Das bisherige Passwort und die Authenticator-App von ${u.name} gelten dann nicht mehr.`)) return;
+          userAction(async () => showStartPassword(u.name, (await api('POST', `users/${enc}/reset`)).startPassword));
+        } }, '↺'),
+        el('button', { type: 'button', class: 'icon', title: 'Benutzer entfernen', onclick: () => {
+          if (!confirm(`${u.name} aus dem Tresor entfernen? ${u.name} kann den Tresor danach nicht mehr öffnen.`)) return;
+          userAction(() => api('DELETE', `users/${enc}`));
+        } }, '🗑'),
+      );
+    }
+    return el('tr', {},
+      el('td', {}, u.name, me ? el('span', { class: 'me' }, ' (du)') : null),
+      el('td', {}, roleLabel[u.role] || u.role),
+      el('td', {}, state, u.keyFile ? ' · Schlüsseldatei' : ''),
+      el('td', { class: 'actions' }, actions));
+  });
+  $('user-rows').replaceChildren(...rows);
+}
+
+$('user-add-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const name = $('u-name').value.trim();
+  await userAction(async () => {
+    const r = await api('POST', 'users', { name, role: $('u-role').value });
+    $('u-name').value = '';
+    showStartPassword(name, r.startPassword);
+  });
+});
 
 $('btn-settings').addEventListener('click', openSettings);
 
