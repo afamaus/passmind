@@ -1,0 +1,5 @@
+/dist/
+*.vault
+*.vault.bak
+*.key
+*.csv

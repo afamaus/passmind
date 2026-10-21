@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PassMind</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Einrichtung -->
+<section id="view-setup" class="view auth hidden">
+  <div class="card">
+    <h1><img src="favicon.svg" alt="" class="logo"> PassMind einrichten</h1>
+    <ol class="steps"><li data-step="1">Master-Passwort</li><li data-step="2">Authenticator</li><li data-step="3">Wiederherstellung</li></ol>
+
+    <form id="setup-step1" class="step">
+      <p class="muted">Der Tresor wird hier gespeichert:<br><code id="setup-path"></code></p>
+      <label>Master-Passwort
+        <input type="password" id="setup-pw" autocomplete="new-password" required minlength="10">
+      </label>
+      <div class="meter"><div id="setup-meter"></div></div>
+      <small id="setup-meter-text" class="muted"></small>
+      <label>Master-Passwort wiederholen
+        <input type="password" id="setup-pw2" autocomplete="new-password" required>
+      </label>
+      <details>
+        <summary>Optional: Schlüsseldatei als zweiter Schlüssel</summary>
+        <p class="muted">Ohne die Schlüsseldatei lässt sich der Tresor dann nicht mehr öffnen. Bewahre sie getrennt vom Tresor auf (z.&nbsp;B. auf einem zweiten USB-Stick) und mach eine Sicherungskopie.</p>
+        <a class="btn secondary" href="api/keyfile/new" download>Neue Schlüsseldatei herunterladen</a>
+        <label>Schlüsseldatei auswählen
+          <input type="file" id="setup-keyfile">
+        </label>
+      </details>
+      <p class="error" id="setup-error1"></p>
+      <button type="submit" class="btn">Weiter</button>
+    </form>
+
+    <form id="setup-step2" class="step hidden">
+      <p>Scanne den QR-Code mit einer Authenticator-App (z.&nbsp;B. Microsoft Authenticator, Google Authenticator, Aegis, 2FAS).</p>
+      <img id="setup-qr" class="qr" alt="QR-Code für die Authenticator-App">
+      <p class="muted">Oder Schlüssel manuell eingeben: <code id="setup-secret" class="break"></code></p>
+      <label>6-stelliger Code aus der App
+        <input type="text" id="setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+      </label>
+      <p class="error" id="setup-error2"></p>
+      <div class="row">
+        <button type="button" class="btn secondary" id="setup-back">Zurück</button>
+        <button type="submit" class="btn">Tresor anlegen</button>
+      </div>
+    </form>
+
+    <div id="setup-step3" class="step hidden">
+      <p><strong>Wiederherstellungscodes</strong>: Damit kommst du an den Tresor, wenn das Handy mit der Authenticator-App verloren geht. Jeder Code funktioniert einmal. Drucke sie aus oder speichere sie sicher, getrennt vom Tresor.</p>
+      <ul id="setup-recovery" class="codes"></ul>
+      <div class="row">
+        <button type="button" class="btn secondary" id="setup-copy-codes">Codes kopieren</button>
+        <button type="button" class="btn" id="setup-done">Gespeichert, weiter</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Entsperren -->
+<section id="view-unlock" class="view auth hidden">
+  <form class="card" id="unlock-form">
+    <h1><img src="favicon.svg" alt="" class="logo"> PassMind</h1>
+    <p class="muted">Tresor: <code id="unlock-path"></code></p>
+    <label>Master-Passwort
+      <input type="password" id="unlock-pw" autocomplete="current-password" required>
+    </label>
+    <label id="unlock-keyfile-wrap" class="hidden">Schlüsseldatei
+      <input type="file" id="unlock-keyfile">
+    </label>
+    <label id="unlock-code-wrap">Code aus der Authenticator-App
+      <input type="text" id="unlock-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7">
+    </label>
+    <label id="unlock-recovery-wrap" class="hidden">Wiederherstellungscode
+      <input type="text" id="unlock-recovery" autocomplete="off" placeholder="XXXXX-XXXXX">
+    </label>
+    <p><a href="#" id="unlock-toggle-recovery">Handy nicht zur Hand? Wiederherstellungscode verwenden</a></p>
+    <p class="error" id="unlock-error"></p>
+    <button type="submit" class="btn" id="unlock-btn">Entsperren</button>
+  </form>
+</section>
+
+<!-- Hauptansicht -->
+<section id="view-main" class="view hidden">
+  <header class="topbar">
+    <div class="brand"><img src="favicon.svg" alt="" class="logo"> PassMind</div>
+    <input type="search" id="search" placeholder="Suchen (Titel, Benutzer, URL, Notizen, Tags) …" autocomplete="off">
+    <nav>
+      <button class="btn secondary" id="btn-generator" title="Passwortgenerator">🎲 <span class="lbl">Generator</span></button>
+      <button class="btn secondary" id="btn-settings" title="Einstellungen">⚙ <span class="lbl">Einstellungen</span></button>
+      <button class="btn secondary" id="btn-lock" title="Tresor sperren">🔒 <span class="lbl">Sperren</span></button>
+      <button class="btn danger" id="btn-quit" title="Programm beenden">⏻</button>
+    </nav>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span>Ordner</span>
+        <button class="icon" id="btn-new-folder" title="Neuer Ordner">＋</button>
+      </div>
+      <ul id="folder-tree" class="tree"></ul>
+    </aside>
+    <main class="content">
+      <div class="content-head">
+        <h2 id="list-title">Alle Einträge</h2>
+        <div class="row">
+          <button class="icon" id="btn-edit-folder" title="Ordner umbenennen/verschieben">✎</button>
+          <button class="icon" id="btn-delete-folder" title="Ordner löschen">🗑</button>
+          <button class="btn" id="btn-new-entry">＋ Neuer Eintrag</button>
+        </div>
+      </div>
+      <table class="entries">
+        <thead><tr><th>Titel</th><th>Benutzer</th><th class="hide-sm">URL</th><th class="hide-sm">Tags</th><th class="actions">Aktionen</th></tr></thead>
+        <tbody id="entry-rows"></tbody>
+      </table>
+      <p id="empty-hint" class="muted hidden">Keine Einträge. Lege mit „Neuer Eintrag“ den ersten an.</p>
+    </main>
+  </div>
+</section>
+
+<!-- Dialog: Eintrag -->
+<dialog id="dlg-entry">
+  <form id="entry-form" method="dialog">
+    <h2 id="entry-dlg-title">Eintrag</h2>
+    <label>Titel <input type="text" id="e-title" required></label>
+    <label>Ordner <select id="e-folder"></select></label>
+    <label>Benutzername
+      <div class="input-group">
+        <input type="text" id="e-username" autocomplete="off">
+        <button type="button" class="icon" data-copy="e-username" title="Kopieren">⧉</button>
+      </div>
+    </label>
+    <label>Passwort
+      <div class="input-group">
+        <input type="password" id="e-password" autocomplete="new-password" class="mono">
+        <button type="button" class="icon" id="e-toggle" title="Anzeigen/Verbergen">👁</button>
+        <button type="button" class="icon" data-copy="e-password" title="Kopieren">⧉</button>
+        <button type="button" class="icon" id="e-generate" title="Passwort generieren">🎲</button>
+      </div>
+    </label>
+    <div class="meter"><div id="e-meter"></div></div>
+    <small id="e-meter-text" class="muted"></small>
+    <label>URL
+      <div class="input-group">
+        <input type="text" id="e-url" autocomplete="off" placeholder="https://…">
+        <button type="button" class="icon" id="e-open-url" title="Öffnen">↗</button>
+      </div>
+    </label>
+    <label>Notizen <textarea id="e-notes" rows="3"></textarea></label>
+    <label>Tags <input type="text" id="e-tags" placeholder="durch Komma getrennt"></label>
+    <details id="e-history-wrap" class="hidden">
+      <summary>Passwort-Verlauf</summary>
+      <ul id="e-history" class="history"></ul>
+    </details>
+    <p class="muted" id="e-meta"></p>
+    <p class="error" id="entry-error"></p>
+    <div class="row end">
+      <button type="button" class="btn danger" id="e-delete">Löschen</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn secondary" data-close>Abbrechen</button>
+      <button type="submit" class="btn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Dialog: Generator -->
+<dialog id="dlg-generator">
+  <form id="gen-form" method="dialog">
+    <h2>Passwortgenerator</h2>
+    <div class="tabs">
+      <label><input type="radio" name="gen-mode" value="chars" checked> Zeichen</label>
+      <label><input type="radio" name="gen-mode" value="words"> Passphrase</label>
+    </div>
+    <div id="gen-chars">
+      <label>Länge: <strong id="gen-length-val">20</strong>
+        <input type="range" id="gen-length" min="8" max="64" value="20">
+      </label>
+      <div class="checks">
+        <label><input type="checkbox" id="gen-lower" checked> a–z</label>
+        <label><input type="checkbox" id="gen-upper" checked> A–Z</label>
+        <label><input type="checkbox" id="gen-digits" checked> 0–9</label>
+        <label><input type="checkbox" id="gen-symbols" checked> !#$%…</label>
+        <label><input type="checkbox" id="gen-ambiguous"> Ähnliche Zeichen vermeiden (I l 1 O 0)</label>
+      </div>
+    </div>
+    <div id="gen-words" class="hidden">
+      <label>Wörter: <strong id="gen-words-val">5</strong>
+        <input type="range" id="gen-wordcount" min="3" max="10" value="5">
+      </label>
+      <label>Trennzeichen <input type="text" id="gen-sep" value="-" maxlength="3"></label>
+      <div class="checks">
+        <label><input type="checkbox" id="gen-w-upper" checked> Großer Anfangsbuchstabe</label>
+        <label><input type="checkbox" id="gen-w-digit" checked> Eine Ziffer einfügen</label>
+      </div>
+    </div>
+    <div class="gen-output">
+      <input type="text" id="gen-result" readonly class="mono">
+      <button type="button" class="icon" id="gen-refresh" title="Neu erzeugen">↻</button>
+      <button type="button" class="icon" data-copy="gen-result" title="Kopieren">⧉</button>
+    </div>
+    <small id="gen-entropy" class="muted"></small>
+    <div class="row end">
+      <button type="button" class="btn secondary" data-close>Schließen</button>
+      <button type="button" class="btn hidden" id="gen-use">Übernehmen</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Dialog: Ordner -->
+<dialog id="dlg-folder">
+  <form id="folder-form" method="dialog">
+    <h2 id="folder-dlg-title">Ordner</h2>
+    <label>Name <input type="text" id="f-name" required></label>
+    <label>Übergeordneter Ordner <select id="f-parent"></select></label>
+    <p class="error" id="folder-error"></p>
+    <div class="row end">
+      <button type="button" class="btn secondary" data-close>Abbrechen</button>
+      <button type="submit" class="btn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Dialog: Einstellungen -->
+<dialog id="dlg-settings" class="wide">
+  <div>
+    <h2>Einstellungen</h2>
+    <form id="settings-form" class="section">
+      <h3>Allgemein</h3>
+      <label>Automatisch sperren nach (Minuten Inaktivität)
+        <input type="number" id="s-autolock" min="1" max="240" required>
+      </label>
+      <label>Zwischenablage leeren nach (Sekunden)
+        <input type="number" id="s-clipboard" min="5" max="600" required>
+      </label>
+      <button type="submit" class="btn">Speichern</button>
+    </form>
+
+    <form id="cred-form" class="section">
+      <h3>Master-Passwort / Schlüsseldatei ändern</h3>
+      <label>Aktuelles Master-Passwort <input type="password" id="c-current" autocomplete="current-password" required></label>
+      <label class="kf-current hidden">Aktuelle Schlüsseldatei <input type="file" id="c-current-kf"></label>
+      <label>Neues Master-Passwort <input type="password" id="c-new" autocomplete="new-password" required minlength="10"></label>
+      <label>Neues Master-Passwort wiederholen <input type="password" id="c-new2" autocomplete="new-password" required></label>
+      <label>Neue Schlüsseldatei (leer lassen = keine Schlüsseldatei) <input type="file" id="c-new-kf"></label>
+      <button type="submit" class="btn">Ändern</button>
+    </form>
+
+    <div class="section">
+      <h3>Authenticator (MFA)</h3>
+      <p class="muted">Verbleibende Wiederherstellungscodes: <strong id="s-recovery-left"></strong></p>
+      <form id="mfa-reset-form" class="row">
+        <input type="text" id="m-current" inputmode="numeric" maxlength="7" placeholder="Aktueller Code" required>
+        <button type="submit" class="btn secondary">Neu einrichten</button>
+      </form>
+      <form id="mfa-confirm-form" class="hidden">
+        <img id="m-qr" class="qr" alt="QR-Code">
+        <p class="muted">Schlüssel: <code id="m-secret" class="break"></code></p>
+        <div class="row">
+          <input type="text" id="m-code" inputmode="numeric" maxlength="7" placeholder="Code aus der App" required>
+          <button type="submit" class="btn">Bestätigen</button>
+        </div>
+      </form>
+      <ul id="m-recovery" class="codes hidden"></ul>
+    </div>
+
+    <div class="section">
+      <h3>Import / Export</h3>
+      <p class="muted">Import aus CSV (Passwordstate, KeePass, Bitwarden, Excel). Erkannt werden Spalten wie Title, UserName, Password, URL, Notes, Group/PasswordList.</p>
+      <label>CSV-Datei importieren <input type="file" id="i-file" accept=".csv,text/csv"></label>
+      <form id="export-form" class="row">
+        <input type="password" id="x-pw" placeholder="Master-Passwort zur Bestätigung" required autocomplete="current-password">
+        <input type="file" id="x-kf" class="kf-current hidden" title="Schlüsseldatei">
+        <button type="submit" class="btn secondary">Als CSV exportieren</button>
+      </form>
+      <p class="muted warn">Achtung: Die Exportdatei enthält alle Passwörter im Klartext.</p>
+    </div>
+    <p class="error" id="settings-error"></p>
+    <div class="row end"><button type="button" class="btn secondary" data-close>Schließen</button></div>
+  </div>
+</dialog>
+
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
