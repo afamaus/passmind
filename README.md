@@ -41,6 +41,16 @@ Wer den Tresor anlegt, ist Admin. Unter Einstellungen → „Benutzer“ legt ei
 
 Die Schlüsseldatei ist optional pro Benutzer und wird in den Einstellungen unter „Eigenes Passwort / Schlüsseldatei ändern“ gesetzt.
 
+## Anmeldung mit Active Directory
+
+Liegt der Tresor auf einem Netzlaufwerk in der Domäne, können sich Mitglieder einer AD-Gruppe mit ihrem AD-Konto anmelden. Lokale Benutzer (z. B. der lokale Admin) bleiben bestehen.
+
+1. Als lokaler Admin unter Einstellungen → „Active Directory“ Domänencontroller (z. B. `dc01.firma.local`), Domäne (`firma.local`) und Gruppe (z. B. `GR-PASS-ADM`) eintragen, mit einem Testkonto „Verbindung testen“ und einschalten.
+2. PassMind legt neben dem Tresor die Datei `passmind.vault.adkey` an. **Diese Datei per NTFS-Rechten nur für die AD-Gruppe und die Admins lesbar machen.** Mit ihr lässt sich der Tresor öffnen; wer sie nicht lesen kann, kommt auch mit AD-Konto nicht hinein.
+3. Ab jetzt reicht es, einen Benutzer in die Gruppe aufzunehmen. Er meldet sich mit `name`, `FIRMA\name` oder `name@firma.local` und seinem AD-Passwort an und richtet beim ersten Mal seine eigene Authenticator-App ein.
+
+Technisch: Anmeldung per LDAPS (Port 636, Zertifikat wird geprüft) mit dem Konto des Benutzers, Prüfung der Gruppe auch über verschachtelte Gruppen. Wird jemand aus der Gruppe genommen, kommt er nicht mehr hinein. Handy verloren: Ein Admin setzt in der Benutzerliste die MFA zurück (↺). Beim Ausschalten wird der Tresor neu verschlüsselt, die alte `.adkey`-Datei ist dann wertlos.
+
 ## Tresor auf dem NAS
 
 1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux.

@@ -83,6 +83,7 @@
       <input type="text" id="unlock-user" autocomplete="username" list="unlock-users" required>
       <datalist id="unlock-users"></datalist>
     </label>
+    <small class="muted hidden" id="unlock-ad-hint"></small>
     <label>Passwort
       <input type="password" id="unlock-pw" autocomplete="current-password" required>
     </label>
@@ -336,6 +337,35 @@
           <button type="button" class="icon" data-copy="u-start-pw" title="Kopieren">⧉</button>
         </div>
       </div>
+    </div>
+
+    <div class="section admin-only" id="ad-section">
+      <h3>Active Directory</h3>
+      <p class="muted">Mitglieder einer AD-Gruppe melden sich mit ihrem AD-Konto an, zusätzlich mit ihrer eigenen Authenticator-App. Lokale Benutzer bleiben bestehen. PassMind legt neben dem Tresor die Datei <code id="ad-keyfile" class="break">passmind.vault.adkey</code> ab. Gib sie per NTFS-Rechten nur für die AD-Gruppe (und Admins) frei, denn mit ihr lässt sich der Tresor öffnen.</p>
+      <form id="ad-form">
+        <label>Domänencontroller <input type="text" id="ad-server" placeholder="dc01.firma.local" required autocomplete="off"></label>
+        <small class="muted">Verbindung über LDAPS (Port 636). Für einen anderen Port z. B. <code>ldaps://dc01:3269</code>, für StartTLS <code>ldap://dc01</code>.</small>
+        <label>Domäne <input type="text" id="ad-domain" placeholder="firma.local" required autocomplete="off"></label>
+        <label>Gruppe <input type="text" id="ad-group" placeholder="GR-PASS-ADM" required autocomplete="off"></label>
+        <label>Rolle der AD-Benutzer in PassMind
+          <select id="ad-role"><option value="user">Benutzer</option><option value="admin">Admin (darf Benutzer verwalten)</option></select>
+        </label>
+        <details>
+          <summary>Erweitert</summary>
+          <label>Suchbasis (leer = aus der Domäne) <input type="text" id="ad-basedn" placeholder="DC=firma,DC=local" autocomplete="off"></label>
+          <label class="check"><input type="checkbox" id="ad-skipverify"> Zertifikat des Domänencontrollers nicht prüfen (nur zum Testen)</label>
+        </details>
+        <div class="row ad-test">
+          <input type="text" id="ad-test-user" placeholder="Testkonto, z. B. FIRMA\name" autocomplete="off">
+          <input type="password" id="ad-test-pw" placeholder="Passwort des Testkontos" autocomplete="off">
+          <button type="button" class="btn secondary" id="ad-test">Verbindung testen</button>
+        </div>
+        <p class="muted" id="ad-status"></p>
+        <div class="row">
+          <button type="submit" class="btn" id="ad-save">AD-Anmeldung einschalten</button>
+          <button type="button" class="btn danger hidden" id="ad-disable">Ausschalten</button>
+        </div>
+      </form>
     </div>
 
     <form id="cred-form" class="section">

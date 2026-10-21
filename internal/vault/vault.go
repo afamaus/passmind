@@ -78,6 +78,8 @@ type UserInfo struct {
 	Role      string    `json:"role"`
 	Created   time.Time `json:"created"`
 	ChangedAt time.Time `json:"changedAt"`
+	AD        bool      `json:"ad,omitempty"`  // meldet sich über Active Directory an
+	MFA       *MFA      `json:"mfa,omitempty"` // nur AD-Benutzer: ihre MFA (lokale Benutzer haben sie im Slot)
 }
 
 // Data ist der komplette entschlüsselte, gemeinsame Inhalt des Tresors.
@@ -95,7 +97,9 @@ type Vault struct {
 	path     string
 	dek      []byte // Datenschlüssel, mit dem Data verschlüsselt ist
 	slots    []Slot
+	ad       *ADConfig
 	user     string
+	slotUser string // Slot, mit dem geöffnet wurde (bei AD-Benutzern der Gruppen-Slot)
 	priv     *ecdh.PrivateKey
 	kek      []byte // aus dem Passwort abgeleitet; nil, wenn das Passwort anderswo geändert wurde
 	mfa      *MFA
@@ -177,7 +181,7 @@ func Create(path, user, password string, keyFile []byte, mfa MFA) (*Vault, error
 	}
 	now := time.Now().UTC()
 	v := &Vault{
-		path: path, dek: randomKey(), slots: []Slot{slot}, user: user, priv: priv, kek: kek, mfa: &mfa,
+		path: path, dek: randomKey(), slots: []Slot{slot}, user: user, slotUser: user, priv: priv, kek: kek, mfa: &mfa,
 		Data: Data{
 			Folders:  []Folder{{ID: NewID(), Name: "Allgemein", Updated: now}},
 			Entries:  []Entry{},
@@ -231,7 +235,7 @@ func Open(path, user, password string, keyFile []byte) (*Vault, *MFA, error) {
 	if err != nil {
 		return nil, nil, ErrBadCredentials
 	}
-	v := &Vault{path: path, dek: dek, slots: h.Users, user: slot.User, priv: priv, kek: kek, lastHash: sha256.Sum256(raw)}
+	v := &Vault{path: path, dek: dek, slots: h.Users, ad: h.AD, user: slot.User, slotUser: slot.User, priv: priv, kek: kek, lastHash: sha256.Sum256(raw)}
 	if err := v.decryptData(f); err != nil {
 		return nil, nil, err
 	}
@@ -335,7 +339,7 @@ func (v *Vault) write() error {
 		}
 		v.slots[i].DEK = s
 	}
-	hb, err := json.Marshal(header{Version: formatVersion, Cipher: "aes-256-gcm", Users: v.slots})
+	hb, err := json.Marshal(header{Version: formatVersion, Cipher: "aes-256-gcm", Users: v.slots, AD: v.ad})
 	if err != nil {
 		return err
 	}
@@ -400,6 +404,12 @@ func (v *Vault) MoveTo(path string) error {
 		v.path = old
 		return err
 	}
+	// Die Schlüsseldatei der AD-Gruppe gehört zum Tresor und zieht mit um.
+	if key, err := os.ReadFile(ADKeyPath(old)); err == nil {
+		if err := os.WriteFile(ADKeyPath(path), key, 0o600); err != nil {
+			return fmt.Errorf("Tresor verschoben, aber die AD-Schlüsseldatei konnte nicht kopiert werden: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -408,6 +418,12 @@ func (v *Vault) User() string { return v.user }
 
 // Role liefert die Rolle des angemeldeten Benutzers.
 func (v *Vault) Role() string {
+	if v.IsADUser() {
+		if v.ad != nil && v.ad.Role == RoleAdmin {
+			return RoleAdmin
+		}
+		return RoleUser
+	}
 	for _, u := range v.Data.Users {
 		if strings.EqualFold(u.Name, v.user) {
 			return u.Role
@@ -420,7 +436,7 @@ func (v *Vault) Role() string {
 func (v *Vault) IsAdmin() bool { return v.Role() == RoleAdmin }
 
 func (v *Vault) ownSlot() *Slot {
-	if i := findSlot(v.slots, v.user); i >= 0 {
+	if i := findSlot(v.slots, v.slotName()); i >= 0 {
 		return &v.slots[i]
 	}
 	return nil
@@ -449,6 +465,9 @@ func (v *Vault) SetMFA(m MFA) error {
 	if _, err := v.Refresh(); err != nil {
 		return err
 	}
+	if v.IsADUser() {
+		return v.setADMFA(m)
+	}
 	s := v.ownSlot()
 	if s == nil || v.kek == nil {
 		return errReLogin
@@ -470,6 +489,9 @@ func (v *Vault) SetMFA(m MFA) error {
 // ChangeCredentials setzt für den angemeldeten Benutzer ein neues Passwort und/oder eine neue
 // Schlüsseldatei (nil = keine).
 func (v *Vault) ChangeCredentials(password string, keyFile []byte) error {
+	if v.IsADUser() {
+		return errors.New("Dein Passwort ist dein AD-Passwort und wird im Active Directory geändert")
+	}
 	if _, err := v.Refresh(); err != nil {
 		return err
 	}

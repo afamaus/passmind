@@ -13,6 +13,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"passmind/internal/gen"
+	"passmind/internal/ldapauth"
 	"passmind/internal/totp"
 	"passmind/internal/vault"
 )
@@ -177,7 +178,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
-	v, mfa, err := vault.Open(s.vaultPath, strings.TrimSpace(req.User), req.Password, kf)
+	v, mfa, err := s.openFor(strings.TrimSpace(req.User), req.Password, kf)
 	if err == nil && (v.MustChange() || mfa == nil) {
 		// Erste Anmeldung mit Startpasswort oder MFA vom Admin zurückgesetzt: einrichten lassen.
 		s.failures = 0
@@ -219,7 +220,11 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		log.Println("Fehlgeschlagener Entsperrversuch")
 		time.Sleep(delay)
-		writeErr(w, http.StatusUnauthorized, "Anmeldung fehlgeschlagen. Bitte Benutzer, Passwort, Schlüsseldatei und Code prüfen.")
+		msg := "Anmeldung fehlgeschlagen. Bitte Benutzer, Passwort, Schlüsseldatei und Code prüfen."
+		if err != nil && !errors.Is(err, vault.ErrBadCredentials) && !errors.Is(err, ldapauth.ErrBadCredentials) {
+			msg = err.Error() // z. B. DC nicht erreichbar, nicht in der Gruppe, AD-Schlüsseldatei fehlt
+		}
+		writeErr(w, http.StatusUnauthorized, msg)
 		return
 	}
 	s.failures = 0
@@ -230,6 +235,50 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	log.Println("Angemeldet:", v.User())
 	writeJSON(w, map[string]any{"ok": true, "recoveryUsed": usedRecovery, "recoveryRemaining": remaining})
+}
+
+// openFor öffnet den Tresor für einen lokalen Benutzer oder, wenn es den Namen lokal nicht gibt
+// und die AD-Anmeldung eingerichtet ist, für einen AD-Benutzer (nach LDAP-Prüfung).
+func (s *Server) openFor(user, password string, keyFile []byte) (*vault.Vault, *vault.MFA, error) {
+	if cfg := vault.ReadADConfig(s.vaultPath); cfg != nil && !s.isLocalUser(user) {
+		name, err := s.adAuth(*cfg, user, password)
+		if err != nil {
+			return nil, nil, err
+		}
+		return vault.OpenAD(s.vaultPath, name)
+	}
+	return vault.Open(s.vaultPath, user, password, keyFile)
+}
+
+func (s *Server) isLocalUser(user string) bool {
+	info, err := vault.ReadLoginInfo(s.vaultPath)
+	if err != nil {
+		return false
+	}
+	for _, u := range info.Users {
+		if strings.EqualFold(u, user) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkPassword prüft das Passwort des angemeldeten Benutzers erneut (z. B. vor dem Export).
+func (s *Server) checkPassword(v *vault.Vault, password string, keyFile []byte) bool {
+	if v.IsADUser() {
+		cfg := v.ADConfig()
+		if cfg == nil {
+			return false
+		}
+		name, err := s.adAuth(*cfg, v.User(), password)
+		return err == nil && strings.EqualFold(name, v.User())
+	}
+	check, _, err := vault.Open(s.vaultPath, v.User(), password, keyFile)
+	if err != nil {
+		return false
+	}
+	check.Close()
+	return true
 }
 
 // handleEnroll schließt die erste Anmeldung ab: eigenes Passwort setzen (bei Startpasswort)
@@ -339,6 +388,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vau
 		"path":              v.Path(),
 		"user":              v.User(),
 		"role":              v.Role(),
+		"ad":                v.IsADUser(),
 	})
 }
 
