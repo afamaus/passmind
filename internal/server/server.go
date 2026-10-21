@@ -135,6 +135,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /api/entries/{id}", s.unlocked(s.handleGetEntry))
 	api.HandleFunc("POST /api/entries", s.unlocked(s.handleSaveEntry))
 	api.HandleFunc("DELETE /api/entries/{id}", s.unlocked(s.handleDeleteEntry))
+	api.HandleFunc("POST /api/entries/bulk", s.unlocked(s.handleBulkEntries))
 	api.HandleFunc("POST /api/folders", s.unlocked(s.handleSaveFolder))
 	api.HandleFunc("DELETE /api/folders/{id}", s.unlocked(s.handleDeleteFolder))
 	api.HandleFunc("PUT /api/settings", s.unlocked(s.handleSettings))

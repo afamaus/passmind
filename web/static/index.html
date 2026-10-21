@@ -171,12 +171,21 @@
         <h2 id="list-title">Alle Einträge</h2>
         <div class="row">
           <button class="icon" id="btn-edit-folder" title="Ordner umbenennen/verschieben">✎</button>
-          <button class="icon" id="btn-delete-folder" title="Ordner löschen">🗑</button>
+          <button class="btn secondary danger-text" id="btn-delete-folder" title="Ordner mit Unterordnern und Einträgen löschen">🗑 <span class="lbl">Ordner löschen</span></button>
           <button class="btn" id="btn-new-entry">＋ Neuer Eintrag</button>
         </div>
       </div>
+      <div id="bulk-bar" class="bulk-bar hidden">
+        <strong id="bulk-count"></strong>
+        <label class="bulk-move">Verschieben nach
+          <select id="bulk-folder"></select>
+        </label>
+        <button type="button" class="btn secondary" id="bulk-move">Verschieben</button>
+        <button type="button" class="btn danger" id="bulk-delete">🗑 Löschen</button>
+        <button type="button" class="btn secondary" id="bulk-clear">Auswahl aufheben</button>
+      </div>
       <table class="entries">
-        <thead><tr><th>Titel</th><th>Benutzer</th><th>Passwort</th><th class="hide-sm">URL</th><th class="hide-sm">Tags</th><th class="actions">Aktionen</th></tr></thead>
+        <thead><tr><th class="sel"><input type="checkbox" id="sel-all" title="Alle auswählen" aria-label="Alle auswählen"></th><th>Titel</th><th>Benutzer</th><th>Passwort</th><th class="hide-sm">URL</th><th class="hide-sm">Tags</th><th class="actions">Aktionen</th></tr></thead>
         <tbody id="entry-rows"></tbody>
       </table>
       <p id="empty-hint" class="muted hidden">Keine Einträge. Lege mit „Neuer Eintrag“ den ersten an.</p>

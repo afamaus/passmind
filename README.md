@@ -15,6 +15,8 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 
 - Ordner (beliebig verschachtelt) in einer Baumansicht, Einträge und Ordner per Drag & Drop verschieben (Ordner auf „Alle Einträge“ ziehen = oberste Ebene)
 - Einträge mit Titel, Benutzername, Passwort, URL, Notizen und Tags
+- Mehrfachauswahl per Auswahlkästchen: mehrere Einträge auf einmal löschen oder verschieben (auch per Ziehen auf einen Ordner)
+- Ordner löschen über „Ordner löschen“ oberhalb der Liste (löscht Unterordner und Einträge mit)
 - Suche über alle Felder (`Strg+F`), neuer Eintrag mit `Strg+N`, Sperren mit `Strg+L`
 - Integrierter **Passwortgenerator**: Zeichen (Länge, Gruppen, ähnliche Zeichen vermeiden) oder Passphrase aus Wörtern
 - Stärkeanzeige für Passwörter

@@ -307,3 +307,32 @@ func TestMultiUser(t *testing.T) {
 		t.Fatalf("Benutzerliste: %v", list)
 	}
 }
+
+func TestBulkEntries(t *testing.T) {
+	s, c, launch := startServer(t)
+	c.http.Get(launch)
+	s.failures = -100
+	_, setup := c.do("POST", "api/setup/totp", nil)
+	code6, _ := totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+	_, f := c.do("POST", "api/folders", map[string]string{"name": "Ziel"})
+	var ids []string
+	for _, title := range []string{"a", "b", "c"} {
+		_, e := c.do("POST", "api/entries", map[string]string{"title": title, "password": "x"})
+		ids = append(ids, e["id"].(string))
+	}
+	if code, r := c.do("POST", "api/entries/bulk", map[string]any{"action": "move", "ids": ids[:2], "folderId": f["id"]}); code != 200 || r["count"] != float64(2) {
+		t.Fatalf("verschieben: %d %v", code, r)
+	}
+	if code, _ := c.do("POST", "api/entries/bulk", map[string]any{"action": "move", "ids": ids, "folderId": "gibtsnicht"}); code != http.StatusBadRequest {
+		t.Fatal("unbekannter Zielordner akzeptiert")
+	}
+	if code, r := c.do("POST", "api/entries/bulk", map[string]any{"action": "delete", "ids": ids[1:]}); code != 200 || r["count"] != float64(2) {
+		t.Fatalf("löschen: %d %v", code, r)
+	}
+	_, d := c.do("GET", "api/data", nil)
+	entries := d["entries"].([]any)
+	if len(entries) != 1 || entries[0].(map[string]any)["folderId"] != f["id"] {
+		t.Fatalf("Ergebnis: %v", entries)
+	}
+}
