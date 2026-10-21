@@ -76,11 +76,11 @@ func TestFullFlow(t *testing.T) {
 	// Einrichtung mit TOTP
 	_, setup := c.do("POST", "api/setup/totp", nil)
 	secret := setup["secret"].(string)
-	if code, _ := c.do("POST", "api/setup", map[string]string{"password": "ein-langes-passwort", "code": "000000"}); code != http.StatusBadRequest {
+	if code, _ := c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": "000000"}); code != http.StatusBadRequest {
 		t.Fatalf("falscher Code akzeptiert: %d", code)
 	}
 	code6, _ := totp.Code(secret, time.Now())
-	code, res := c.do("POST", "api/setup", map[string]string{"password": "ein-langes-passwort", "code": code6})
+	code, res := c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
 	if code != 200 {
 		t.Fatalf("Einrichtung: %d %v", code, res)
 	}
@@ -104,7 +104,7 @@ func TestFullFlow(t *testing.T) {
 		t.Fatalf("gesperrt erwartet: %d", code)
 	}
 	s.failures = -100 // Wartezeit nach Fehlversuchen im Test abschalten
-	if code, _ := c.do("POST", "api/unlock", map[string]string{"password": "ein-langes-passwort", "code": "123456"}); code != http.StatusUnauthorized {
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": "123456"}); code != http.StatusUnauthorized {
 		t.Fatalf("falscher TOTP-Code akzeptiert: %d", code)
 	}
 	code, res = c.do("POST", "api/unlock", map[string]string{"password": "ein-langes-passwort", "recoveryCode": recovery[0].(string)})
@@ -116,7 +116,7 @@ func TestFullFlow(t *testing.T) {
 		t.Fatal("Wiederherstellungscode doppelt verwendbar")
 	}
 	code6, _ = totp.Code(secret, time.Now())
-	if code, _ := c.do("POST", "api/unlock", map[string]string{"password": "ein-langes-passwort", "code": code6}); code != 200 {
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6}); code != 200 {
 		t.Fatalf("Entsperren: %d", code)
 	}
 
@@ -199,7 +199,7 @@ func TestSelectAndMoveVault(t *testing.T) {
 	// Anlegen und verschieben
 	_, setup := c.do("POST", "api/setup/totp", nil)
 	code6, _ := totp.Code(setup["secret"].(string), time.Now())
-	c.do("POST", "api/setup", map[string]string{"password": "ein-langes-passwort", "code": code6})
+	c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
 	target := filepath.Join(dir, "nas.vault")
 	if code, mv := c.do("POST", "api/vault/move", map[string]string{"path": target}); code != 200 || mv["path"] != target {
 		t.Fatalf("move: %d %v", code, mv)
@@ -209,5 +209,76 @@ func TestSelectAndMoveVault(t *testing.T) {
 	}
 	if _, st := c.do("GET", "api/status", nil); st["path"] != target {
 		t.Fatalf("Status-Pfad: %v", st["path"])
+	}
+}
+
+func TestMultiUser(t *testing.T) {
+	s, c, launch := startServer(t)
+	c.http.Get(launch)
+	s.failures = -100
+	_, setup := c.do("POST", "api/setup/totp", nil)
+	code6, _ := totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+
+	code, add := c.do("POST", "api/users", map[string]string{"name": "Anna", "role": "user"})
+	if code != 200 || add["startPassword"] == nil {
+		t.Fatalf("Benutzer anlegen: %d %v", code, add)
+	}
+	if code, _ := c.do("POST", "api/users", map[string]string{"name": "anna", "role": "user"}); code != http.StatusBadRequest {
+		t.Fatal("doppelter Benutzer angelegt")
+	}
+	c.do("POST", "api/lock", nil)
+	_, st := c.do("GET", "api/status", nil)
+	if users := st["login"].(map[string]any)["users"].([]any); len(users) != 2 {
+		t.Fatalf("Anmeldeliste: %v", st["login"])
+	}
+
+	// Erste Anmeldung mit Startpasswort: eigenes Passwort und eigene MFA einrichten.
+	code, en := c.do("POST", "api/unlock", map[string]string{"user": "anna", "password": add["startPassword"].(string)})
+	if code != 200 || en["enroll"] != true || en["mustChange"] != true || en["secret"] == nil {
+		t.Fatalf("Einrichtung erwartet: %d %v", code, en)
+	}
+	if code, _ := c.do("GET", "api/data", nil); code != http.StatusLocked {
+		t.Fatal("vor abgeschlossener Einrichtung schon entsperrt")
+	}
+	annaCode, _ := totp.Code(en["secret"].(string), time.Now())
+	if code, _ := c.do("POST", "api/enroll", map[string]string{"newPassword": "kurz", "code": annaCode}); code != http.StatusBadRequest {
+		t.Fatal("zu kurzes Passwort akzeptiert")
+	}
+	code, done := c.do("POST", "api/enroll", map[string]string{"newPassword": "annas-eigenes-pw", "code": annaCode})
+	if code != 200 || len(done["recoveryCodes"].([]any)) != 8 {
+		t.Fatalf("Einrichtung: %d %v", code, done)
+	}
+	_, data := c.do("GET", "api/data", nil)
+	if data["user"] != "Anna" || data["role"] != "user" {
+		t.Fatalf("angemeldet als %v/%v", data["user"], data["role"])
+	}
+	if code, _ := c.do("POST", "api/users", map[string]string{"name": "x", "role": "user"}); code != http.StatusForbidden {
+		t.Fatal("Nicht-Admin darf Benutzer anlegen")
+	}
+
+	// Danach: eigenes Passwort plus eigener Code, Renés Code gilt nicht.
+	c.do("POST", "api/lock", nil)
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "anna", "password": "annas-eigenes-pw", "code": code6}); code != http.StatusUnauthorized {
+		t.Fatal("fremder TOTP-Code akzeptiert")
+	}
+	annaCode, _ = totp.Code(en["secret"].(string), time.Now())
+	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "anna", "password": "annas-eigenes-pw", "code": annaCode}); code != 200 {
+		t.Fatalf("Anna entsperren: %d", code)
+	}
+
+	// Admin entfernt Anna.
+	c.do("POST", "api/lock", nil)
+	code6, _ = totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+	if code, _ := c.do("DELETE", "api/users/anna", nil); code != 200 {
+		t.Fatalf("Entfernen: %d", code)
+	}
+	if code, _ := c.do("DELETE", "api/users/rene", nil); code != http.StatusBadRequest {
+		t.Fatal("sich selbst entfernt")
+	}
+	_, list := c.do("GET", "api/users", nil)
+	if len(list["users"].([]any)) != 1 {
+		t.Fatalf("Benutzerliste: %v", list)
 	}
 }

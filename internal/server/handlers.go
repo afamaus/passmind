@@ -32,32 +32,49 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp["missingKnown"] = !resp["exists"].(bool) && slices.Contains(s.cfg.Recent, s.vaultPath)
 	if s.v != nil {
 		resp["settings"] = s.v.Data.Settings
-		resp["keyFileNeeded"] = s.v.KeyFileNeeded()
+		resp["user"] = s.v.User()
 	} else if resp["exists"].(bool) {
-		kf, err := vault.NeedsKeyFile(s.vaultPath)
+		info, err := vault.ReadLoginInfo(s.vaultPath)
 		if err != nil {
 			resp["error"] = err.Error()
 		}
-		resp["keyFileNeeded"] = kf
+		resp["login"] = info
 	}
+	resp["enrolling"] = s.enroll != nil
 	writeJSON(w, resp)
 }
 
 // newPendingTOTP erzeugt ein neues TOTP-Geheimnis samt QR-Code; s.mu muss gehalten werden.
-func (s *Server) newPendingTOTP(w http.ResponseWriter) {
+func (s *Server) newPendingTOTP(account string) (map[string]any, error) {
 	secret := totp.NewSecret()
-	uri := totp.URI(secret, issuer, "Tresor")
+	if account == "" {
+		account = "Tresor"
+	}
+	uri := totp.URI(secret, issuer, account)
 	png, err := qrcode.Encode(uri, qrcode.Medium, 256)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "QR-Code konnte nicht erzeugt werden")
-		return
+		return nil, errors.New("QR-Code konnte nicht erzeugt werden")
 	}
 	s.pending = &pendingTOTP{secret: secret, created: time.Now()}
-	writeJSON(w, map[string]string{
+	return map[string]any{
 		"secret": secret,
 		"uri":    uri,
 		"qr":     "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
-	})
+	}, nil
+}
+
+func (s *Server) writePendingTOTP(w http.ResponseWriter, account string) {
+	t, err := s.newPendingTOTP(account)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, t)
+}
+
+func newMFA(secret string) (vault.MFA, []string) {
+	plain, hashes := totp.NewRecoveryCodes(8)
+	return vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes}, plain
 }
 
 // checkPending prüft den Code gegen das ausstehende TOTP-Geheimnis; s.mu muss gehalten werden.
@@ -75,17 +92,22 @@ func (s *Server) handleSetupTOTP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "Tresor existiert bereits")
 		return
 	}
-	s.newPendingTOTP(w)
+	s.writePendingTOTP(w, r.URL.Query().Get("user"))
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		User     string `json:"user"`
 		Password string `json:"password"`
 		KeyFile  string `json:"keyFile"`
 		Code     string `json:"code"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.User) == "" {
+		writeErr(w, http.StatusBadRequest, "Bitte einen Benutzernamen angeben")
 		return
 	}
 	if len([]rune(req.Password)) < 10 {
@@ -108,8 +130,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Der Code aus der Authenticator-App stimmt nicht. Bitte Uhrzeit des Handys prüfen und erneut versuchen.")
 		return
 	}
-	plain, hashes := totp.NewRecoveryCodes(8)
-	v, err := vault.Create(s.vaultPath, req.Password, kf, vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes, ChangedAt: time.Now().UTC()})
+	mfa, plain := newMFA(secret)
+	v, err := vault.Create(s.vaultPath, req.User, req.Password, kf, mfa)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "Tresor konnte nicht angelegt werden: "+err.Error())
 		return
@@ -133,6 +155,7 @@ func (s *Server) handleNewKeyFile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		User         string `json:"user"`
 		Password     string `json:"password"`
 		KeyFile      string `json:"keyFile"`
 		Code         string `json:"code"`
@@ -154,19 +177,38 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
-	v, err := vault.Open(s.vaultPath, req.Password, kf)
-	mfaOK, usedRecovery := false, false
+	v, mfa, err := vault.Open(s.vaultPath, strings.TrimSpace(req.User), req.Password, kf)
+	if err == nil && (v.MustChange() || mfa == nil) {
+		// Erste Anmeldung mit Startpasswort oder MFA vom Admin zurückgesetzt: einrichten lassen.
+		s.failures = 0
+		if s.enroll != nil {
+			s.enroll.Close()
+		}
+		s.enroll = v
+		t, err := s.newPendingTOTP(v.User())
+		s.mu.Unlock()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		t["enroll"] = true
+		t["mustChange"] = v.MustChange()
+		t["user"] = v.User()
+		writeJSON(w, t)
+		return
+	}
+	mfaOK, usedRecovery, remaining := false, false, 0
 	if err == nil {
 		if req.RecoveryCode != "" {
 			h := totp.HashRecoveryCode(req.RecoveryCode)
-			if i := slices.Index(v.Data.MFA.RecoveryCodes, h); i >= 0 {
-				v.Data.MFA.RecoveryCodes = slices.Delete(v.Data.MFA.RecoveryCodes, i, i+1)
-				v.Data.MFA.ChangedAt = time.Now().UTC()
-				mfaOK, usedRecovery = v.Save() == nil, true
+			if i := slices.Index(mfa.RecoveryCodes, h); i >= 0 {
+				mfa.RecoveryCodes = slices.Delete(mfa.RecoveryCodes, i, i+1)
+				mfaOK, usedRecovery = v.SetMFA(*mfa) == nil, true
 			}
 		} else {
-			mfaOK = totp.Verify(v.Data.MFA.TOTPSecret, req.Code, time.Now())
+			mfaOK = totp.Verify(mfa.TOTPSecret, req.Code, time.Now())
 		}
+		remaining = len(mfa.RecoveryCodes)
 	}
 	if err != nil || !mfaOK {
 		if v != nil {
@@ -177,7 +219,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		log.Println("Fehlgeschlagener Entsperrversuch")
 		time.Sleep(delay)
-		writeErr(w, http.StatusUnauthorized, "Anmeldung fehlgeschlagen. Bitte Master-Passwort, Schlüsseldatei und Code prüfen.")
+		writeErr(w, http.StatusUnauthorized, "Anmeldung fehlgeschlagen. Bitte Benutzer, Passwort, Schlüsseldatei und Code prüfen.")
 		return
 	}
 	s.failures = 0
@@ -185,9 +227,56 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	s.lastActivity = time.Now()
 	s.cfg.remember(s.vaultPath)
 	s.cfg.save(s.configPath)
-	remaining := len(v.Data.MFA.RecoveryCodes)
 	s.mu.Unlock()
+	log.Println("Angemeldet:", v.User())
 	writeJSON(w, map[string]any{"ok": true, "recoveryUsed": usedRecovery, "recoveryRemaining": remaining})
+}
+
+// handleEnroll schließt die erste Anmeldung ab: eigenes Passwort setzen (bei Startpasswort)
+// und Authenticator-App einrichten.
+func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NewPassword string `json:"newPassword"`
+		Code        string `json:"code"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.enroll
+	if v == nil {
+		writeErr(w, http.StatusConflict, "Keine Einrichtung offen. Bitte neu anmelden.")
+		return
+	}
+	if v.MustChange() && len([]rune(req.NewPassword)) < 10 {
+		writeErr(w, http.StatusBadRequest, "Das neue Passwort muss mindestens 10 Zeichen lang sein")
+		return
+	}
+	secret, ok := s.checkPending(req.Code)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "Der Code aus der Authenticator-App stimmt nicht. Bitte Uhrzeit des Handys prüfen und erneut versuchen.")
+		return
+	}
+	if v.MustChange() {
+		if err := v.ChangeCredentials(req.NewPassword, nil); err != nil {
+			s.writeVaultErr(w, err)
+			return
+		}
+	}
+	mfa, plain := newMFA(secret)
+	if err := v.SetMFA(mfa); err != nil {
+		s.writeVaultErr(w, err)
+		return
+	}
+	s.enroll, s.pending = nil, nil
+	s.v = v
+	s.lastActivity = time.Now()
+	s.cfg.remember(s.vaultPath)
+	s.cfg.save(s.configPath)
+	log.Println("Benutzer eingerichtet:", v.User())
+	writeJSON(w, map[string]any{"recoveryCodes": plain})
 }
 
 func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
@@ -245,9 +334,11 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vau
 		"folders":           v.Data.Folders,
 		"entries":           list,
 		"settings":          v.Data.Settings,
-		"recoveryRemaining": len(v.Data.MFA.RecoveryCodes),
+		"recoveryRemaining": recoveryLeft(v),
 		"keyFileNeeded":     v.KeyFileNeeded(),
 		"path":              v.Path(),
+		"user":              v.User(),
+		"role":              v.Role(),
 	})
 }
 
@@ -362,7 +453,7 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, v *va
 		writeErr(w, http.StatusBadRequest, "Das neue Master-Passwort muss mindestens 10 Zeichen lang sein")
 		return
 	}
-	check, err := vault.Open(s.vaultPath, req.CurrentPassword, curKF)
+	check, _, err := vault.Open(s.vaultPath, v.User(), req.CurrentPassword, curKF)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "Aktuelles Master-Passwort oder Schlüsseldatei ist falsch")
 		return
@@ -383,11 +474,12 @@ func (s *Server) handleMFAReset(w http.ResponseWriter, r *http.Request, v *vault
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !totp.Verify(v.Data.MFA.TOTPSecret, req.Code, time.Now()) {
+	m := v.MFA()
+	if m == nil || !totp.Verify(m.TOTPSecret, req.Code, time.Now()) {
 		writeErr(w, http.StatusUnauthorized, "Aktueller Code ist falsch")
 		return
 	}
-	s.newPendingTOTP(w)
+	s.writePendingTOTP(w, v.User())
 }
 
 func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
@@ -403,11 +495,8 @@ func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request, v *vau
 		writeErr(w, http.StatusBadRequest, "Code stimmt nicht")
 		return
 	}
-	plain, hashes := totp.NewRecoveryCodes(8)
-	old := v.Data.MFA
-	v.Data.MFA = vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes, ChangedAt: time.Now().UTC()}
-	if err := v.Save(); err != nil {
-		v.Data.MFA = old
+	mfa, plain := newMFA(secret)
+	if err := v.SetMFA(mfa); err != nil {
 		s.writeVaultErr(w, err)
 		return
 	}
@@ -426,10 +515,17 @@ func (s *Server) save(w http.ResponseWriter, v *vault.Vault) bool {
 // writeVaultErr meldet einen Speicherfehler. Wurden die Zugangsdaten auf einem anderen
 // Gerät geändert, wird der Tresor gesperrt, damit neu entsperrt werden kann; s.mu muss gehalten werden.
 func (s *Server) writeVaultErr(w http.ResponseWriter, err error) {
-	if errors.Is(err, vault.ErrChangedElsewhere) {
+	if errors.Is(err, vault.ErrChangedElsewhere) || errors.Is(err, vault.ErrUserRemoved) {
 		s.lockLocked()
 		writeErr(w, http.StatusLocked, err.Error())
 		return
 	}
 	writeErr(w, http.StatusInternalServerError, "Speichern fehlgeschlagen: "+err.Error())
+}
+
+func recoveryLeft(v *vault.Vault) int {
+	if m := v.MFA(); m != nil {
+		return len(m.RecoveryCodes)
+	}
+	return 0
 }

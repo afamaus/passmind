@@ -40,9 +40,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request, v *vault.V
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	check, err := vault.Open(s.vaultPath, req.Password, kf)
+	check, _, err := vault.Open(s.vaultPath, v.User(), req.Password, kf)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "Master-Passwort oder Schlüsseldatei ist falsch")
+		writeErr(w, http.StatusUnauthorized, "Passwort oder Schlüsseldatei ist falsch")
 		return
 	}
 	check.Close()

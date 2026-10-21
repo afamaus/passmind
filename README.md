@@ -21,24 +21,36 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 - Kopieren in die Zwischenablage mit automatischem Leeren (Standard 20 s)
 - Passwort-Verlauf pro Eintrag (die letzten 20)
 - Automatische Sperre bei Inaktivität (Standard 5 min)
-- **MFA beim Start**: Master-Passwort plus 6-stelliger Code aus einer Authenticator-App (TOTP), dazu 8 Wiederherstellungscodes
+- **Mehrere Benutzer** pro Tresor, jeder mit eigenem Passwort und eigener Authenticator-App
+- **MFA beim Start**: Passwort plus 6-stelliger Code aus einer Authenticator-App (TOTP), dazu 8 Wiederherstellungscodes je Benutzer
 - Optional eine **Schlüsseldatei** als zusätzlicher Schlüssel
 - CSV-Import (Passwordstate, KeePass, Bitwarden, Excel mit Komma oder Semikolon) und CSV-Export
 - Passwort direkt in der Liste per Auge für 5 Sekunden anzeigen
 - **Tresor auf NAS oder Netzlaufwerk**: mehrere Rechner können denselben Tresor nutzen
+
+## Mehrere Benutzer
+
+Wer den Tresor anlegt, ist Admin. Unter Einstellungen → „Benutzer“ legt ein Admin weitere Benutzer an (Rolle „Benutzer“ oder „Admin“) und bekommt dafür ein Startpasswort angezeigt. Das gibt er persönlich weiter. Beim ersten Anmelden legt der neue Benutzer sein eigenes Passwort fest und richtet seine eigene Authenticator-App ein. Danach meldet sich jeder mit Benutzername, eigenem Passwort und eigenem Code an.
+
+- Alle Benutzer sehen und bearbeiten alle Einträge. Im Eintrag steht, wer ihn zuletzt geändert hat.
+- Passwort vergessen oder Handy verloren: Ein Admin klickt beim Benutzer auf ↺ und gibt ein neues Startpasswort heraus. Passwort und Authenticator werden dann neu eingerichtet.
+- Ein Admin kann Benutzer entfernen. Der Tresor wird dabei mit einem neuen Schlüssel verschlüsselt, ein alter Zugang öffnet ihn danach nicht mehr. Es bleibt immer mindestens ein Admin.
+- Tresore aus älteren PassMind-Versionen werden beim ersten Entsperren umgestellt. Du bist dann Benutzer „admin“. Eine Sicherung der alten Datei bleibt als `.v1.bak` liegen. Wer lieber einen eigenen Namen hat, legt sich selbst als Admin an, meldet sich damit an und entfernt „admin“.
+
+Die Schlüsseldatei ist optional pro Benutzer und wird in den Einstellungen unter „Eigenes Passwort / Schlüsseldatei ändern“ gesetzt.
 
 ## Tresor auf dem NAS
 
 1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux.
 2. Auf den anderen Rechnern PassMind starten und beim Entsperren „Anderen Tresor öffnen“ wählen.
 
-Ändern zwei Rechner gleichzeitig etwas, führt PassMind die Änderungen beim Speichern zusammen: Pro Eintrag gewinnt die neuere Änderung, Löschungen werden übernommen. Die Uhrzeit der Rechner sollte daher stimmen. Wird auf einem Rechner das Master-Passwort geändert, müssen sich die anderen neu anmelden.
+Ändern zwei Rechner gleichzeitig etwas, führt PassMind die Änderungen beim Speichern zusammen: Pro Eintrag gewinnt die neuere Änderung, Löschungen werden übernommen. Die Uhrzeit der Rechner sollte daher stimmen. Wird ein Benutzer entfernt oder zurückgesetzt, müssen sich die anderen Rechner neu anmelden.
 
 ## Starten
 
 1. Passende Datei aus den [Releases](../../releases) laden, z. B. `passmind-windows-amd64.exe`.
 2. Auf den USB-Stick kopieren und starten.
-3. Beim ersten Start führt ein Assistent durch Master-Passwort, Authenticator-App und Wiederherstellungscodes.
+3. Beim ersten Start führt ein Assistent durch Benutzername, Master-Passwort, Authenticator-App und Wiederherstellungscodes.
 
 Hinweise zu den Betriebssystemen:
 
@@ -64,17 +76,18 @@ Optionen:
 | Thema | Umsetzung |
 | --- | --- |
 | Schlüsselableitung | Argon2id (3 Durchläufe, 64 MiB, 4 Threads), 32 Byte Salt |
-| Verschlüsselung | AES-256-GCM; der unverschlüsselte Dateikopf ist als AAD mit authentifiziert |
+| Verschlüsselung | AES-256-GCM mit zufälligem Datenschlüssel; der unverschlüsselte Dateikopf ist als AAD mit authentifiziert |
+| Benutzer | Jeder Benutzer hat ein X25519-Schlüsselpaar. Der private Schlüssel ist mit seinem Passwort (Argon2id) verschlüsselt, der Datenschlüssel ist für jeden Benutzer einzeln versiegelt (ECDH + HKDF-SHA256 + AES-256-GCM). Beim Entfernen oder Zurücksetzen eines Benutzers wird der Datenschlüssel erneuert |
 | Schlüsseldatei | SHA-256 der Datei, per HMAC mit dem Master-Passwort verknüpft, bevor Argon2id läuft |
-| MFA | TOTP nach RFC 6238 (SHA-1, 6 Stellen, 30 s, ±1 Zeitfenster); Wiederherstellungscodes nur gehasht gespeichert, je einmal gültig |
+| MFA | Pro Benutzer, mit dessen Passwort verschlüsselt; TOTP nach RFC 6238 (SHA-1, 6 Stellen, 30 s, ±1 Zeitfenster); Wiederherstellungscodes nur gehasht gespeichert, je einmal gültig |
 | Netzwerk | Server lauscht nur auf 127.0.0.1; Host-Header-Prüfung gegen DNS-Rebinding |
 | Sitzung | Zufälliger Startlink setzt ein HttpOnly/SameSite=Strict-Cookie; schreibende Anfragen brauchen einen eigenen Header (CSRF-Schutz); strikte Content-Security-Policy |
 | Fehlversuche | Ansteigende Wartezeit nach falschen Anmeldungen, einheitliche Fehlermeldung |
 | Export | Nur nach erneuter Eingabe des Master-Passworts |
 
-**Wichtig zur MFA:** Bei einer lokalen Tresordatei schützt der TOTP-Code den Zugang über die Oberfläche. Wer die Tresordatei selbst kopiert, muss trotzdem „nur“ das Master-Passwort (und ggf. die Schlüsseldatei) knacken. Für echten zweiten Faktor bei der Verschlüsselung die **Schlüsseldatei** nutzen und getrennt vom Tresor aufbewahren.
+**Wichtig zur MFA:** Bei einer lokalen Tresordatei schützt der TOTP-Code den Zugang über die Oberfläche. Wer die Tresordatei selbst kopiert, muss trotzdem „nur“ das Passwort eines Benutzers (und ggf. dessen Schlüsseldatei) knacken. Jeder Benutzer sollte deshalb ein starkes Passwort haben. Für echten zweiten Faktor bei der Verschlüsselung die **Schlüsseldatei** nutzen und getrennt vom Tresor aufbewahren.
 
-Ohne Master-Passwort (bzw. Schlüsseldatei) gibt es **keine Möglichkeit**, den Tresor wiederherzustellen. Regelmäßig eine Kopie von `passmind.vault` sichern.
+Vergisst ein Benutzer sein Passwort, kann ein Admin ihn zurücksetzen. Kennt kein Admin mehr sein Passwort (bzw. hat seine Schlüsseldatei), gibt es **keine Möglichkeit**, den Tresor wiederherzustellen. Regelmäßig eine Kopie von `passmind.vault` sichern.
 
 ## Selbst bauen
 

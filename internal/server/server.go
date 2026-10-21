@@ -25,7 +25,7 @@ const (
 	maxBodySize = 16 << 20
 )
 
-// Server hält den Zustand der laufenden Anwendung. Es gibt genau einen Benutzer und einen Tresor.
+// Server hält den Zustand der laufenden Anwendung: einen Tresor und den daran angemeldeten Benutzer.
 type Server struct {
 	mu           sync.Mutex
 	vaultPath    string
@@ -35,6 +35,7 @@ type Server struct {
 	lastActivity time.Time
 	failures     int
 	pending      *pendingTOTP // TOTP-Geheimnis während Einrichtung/Neueinrichtung
+	enroll       *vault.Vault // geöffnet, aber erste Anmeldung (Passwort/MFA) noch nicht abgeschlossen
 
 	sessionToken string
 	launchToken  string
@@ -121,6 +122,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/setup", s.handleSetup)
 	api.HandleFunc("GET /api/keyfile/new", s.handleNewKeyFile)
 	api.HandleFunc("POST /api/unlock", s.handleUnlock)
+	api.HandleFunc("POST /api/enroll", s.handleEnroll)
 	api.HandleFunc("POST /api/lock", s.handleLock)
 	api.HandleFunc("POST /api/quit", s.handleQuit)
 	api.HandleFunc("POST /api/generate", s.handleGenerate)
@@ -141,6 +143,11 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/mfa/confirm", s.unlocked(s.handleMFAConfirm))
 	api.HandleFunc("POST /api/export", s.unlocked(s.handleExport))
 	api.HandleFunc("POST /api/import", s.unlocked(s.handleImport))
+	api.HandleFunc("GET /api/users", s.unlocked(s.handleUsers))
+	api.HandleFunc("POST /api/users", s.admin(s.handleAddUser))
+	api.HandleFunc("DELETE /api/users/{name}", s.admin(s.handleRemoveUser))
+	api.HandleFunc("POST /api/users/{name}/reset", s.admin(s.handleResetUser))
+	api.HandleFunc("PUT /api/users/{name}/role", s.admin(s.handleSetRole))
 
 	mux.Handle("/api/", s.apiGuard(api))
 	return s.securityHeaders(mux)
@@ -198,6 +205,17 @@ func (s *Server) unlocked(h func(http.ResponseWriter, *http.Request, *vault.Vaul
 	}
 }
 
+// admin wie unlocked, aber nur für Admins des Tresors.
+func (s *Server) admin(h func(http.ResponseWriter, *http.Request, *vault.Vault)) http.HandlerFunc {
+	return s.unlocked(func(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
+		if !v.IsAdmin() {
+			writeErr(w, http.StatusForbidden, "Nur Admins dürfen Benutzer verwalten")
+			return
+		}
+		h(w, r, v)
+	})
+}
+
 func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("t")), []byte(s.launchToken)) != 1 {
 		http.Error(w, "Ungültiger Startlink. Bitte die Adresse aus dem Konsolenfenster verwenden.", http.StatusForbidden)
@@ -239,6 +257,10 @@ func (s *Server) lockLocked() {
 	if s.v != nil {
 		s.v.Close()
 		s.v = nil
+	}
+	if s.enroll != nil {
+		s.enroll.Close()
+		s.enroll = nil
 	}
 	s.pending = nil
 }
