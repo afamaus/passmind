@@ -13,7 +13,7 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 
 ## Funktionen
 
-- Ordner (beliebig verschachtelt) in einer Baumansicht, Einträge per Drag & Drop verschieben
+- Ordner (beliebig verschachtelt) in einer Baumansicht, Einträge und Ordner per Drag & Drop verschieben (Ordner auf „Alle Einträge“ ziehen = oberste Ebene)
 - Einträge mit Titel, Benutzername, Passwort, URL, Notizen und Tags
 - Suche über alle Felder (`Strg+F`), neuer Eintrag mit `Strg+N`, Sperren mit `Strg+L`
 - Integrierter **Passwortgenerator**: Zeichen (Länge, Gruppen, ähnliche Zeichen vermeiden) oder Passphrase aus Wörtern
@@ -24,7 +24,7 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 - **Mehrere Benutzer** pro Tresor, jeder mit eigenem Passwort und eigener Authenticator-App
 - **MFA beim Start**: Passwort plus 6-stelliger Code aus einer Authenticator-App (TOTP), dazu 8 Wiederherstellungscodes je Benutzer
 - Optional eine **Schlüsseldatei** als zusätzlicher Schlüssel
-- CSV-Import (Passwordstate, KeePass, Bitwarden, Excel mit Komma oder Semikolon) und CSV-Export
+- CSV-Import (Passwordstate, KeePass 2 „KeePass CSV (1.x)“, KeePassXC, Bitwarden, Excel mit Komma oder Semikolon) und CSV-Export. Nach dem Import zeigt PassMind, welche Spalte in welches Feld ging
 - Passwort direkt in der Liste per Auge für 5 Sekunden anzeigen
 - **Tresor auf NAS oder Netzlaufwerk**: mehrere Rechner können denselben Tresor nutzen
 

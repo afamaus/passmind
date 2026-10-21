@@ -410,28 +410,73 @@ function folderPath(id) {
   return parts.join(' / ');
 }
 
+// ---------- Drag & Drop ----------
+// Einträge lassen sich auf einen Ordner ziehen, Ordner auf einen anderen Ordner
+// oder auf „Alle Einträge“ (= oberste Ebene).
+
+let dragging = null;   // { kind: 'entry' | 'folder', id }
+
+function startDrag(ev, kind, id, label) {
+  dragging = { kind, id };
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.dataTransfer.setData('text/plain', label);   // ohne Daten starten manche Browser kein Ziehen
+  document.body.classList.add('dragging');
+}
+
+document.addEventListener('dragend', () => {
+  dragging = null;
+  document.body.classList.remove('dragging');
+  for (const n of document.querySelectorAll('.tree .drop')) n.classList.remove('drop');
+});
+
+function canDrop(targetId) {
+  if (!dragging) return false;
+  if (dragging.kind === 'entry') return targetId !== '';
+  return !descendants(dragging.id).has(targetId);
+}
+
+function dropTarget(node, targetId, targetName) {
+  node.addEventListener('dragenter', (ev) => { if (canDrop(targetId)) { ev.preventDefault(); node.classList.add('drop'); } });
+  node.addEventListener('dragover', (ev) => {
+    if (!canDrop(targetId)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    node.classList.add('drop');
+  });
+  node.addEventListener('dragleave', (ev) => { if (!node.contains(ev.relatedTarget)) node.classList.remove('drop'); });
+  node.addEventListener('drop', async (ev) => {
+    ev.preventDefault();
+    node.classList.remove('drop');
+    const d = dragging;
+    if (!d || !canDrop(targetId)) return;
+    try {
+      if (d.kind === 'entry') {
+        const full = await api('GET', 'entries/' + d.id);
+        if (full.folderId === targetId) return;
+        full.folderId = targetId;
+        await api('POST', 'entries', full);
+        toast(`Verschoben nach „${targetName}“`);
+      } else {
+        const f = data.folders.find((x) => x.id === d.id);
+        if (!f || (f.parentId || '') === targetId) return;
+        await api('POST', 'folders', { ...f, parentId: targetId });
+        toast(targetId ? `Ordner „${f.name}“ nach „${targetName}“ verschoben` : `Ordner „${f.name}“ auf oberste Ebene verschoben`);
+      }
+      await reload();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
 function folderNode(f) {
   const count = data.entries.filter((e) => descendants(f.id).has(e.folderId)).length;
   const node = el('div', {
     class: 'node' + (currentFolder === f.id ? ' active' : ''),
+    draggable: 'true',
+    title: 'Einträge oder Ordner hierher ziehen',
     onclick: () => { currentFolder = f.id; renderTree(); renderEntries(); },
   }, '📁 ', f.name, el('span', { class: 'count' }, count));
-  // Einträge per Drag & Drop in Ordner verschieben
-  node.addEventListener('dragover', (ev) => { ev.preventDefault(); node.classList.add('drop'); });
-  node.addEventListener('dragleave', () => node.classList.remove('drop'));
-  node.addEventListener('drop', async (ev) => {
-    ev.preventDefault();
-    node.classList.remove('drop');
-    const id = ev.dataTransfer.getData('text/entry-id');
-    if (!id) return;
-    try {
-      const full = await api('GET', 'entries/' + id);
-      full.folderId = f.id;
-      await api('POST', 'entries', full);
-      toast(`Verschoben nach „${f.name}“`);
-      await reload();
-    } catch (e) { toast(e.message, true); }
-  });
+  node.addEventListener('dragstart', (ev) => { ev.stopPropagation(); startDrag(ev, 'folder', f.id, f.name); });
+  dropTarget(node, f.id, f.name);
   const kids = childrenOf(f.id);
   return el('li', {}, node, kids.length ? el('ul', {}, kids.map(folderNode)) : null);
 }
@@ -441,6 +486,7 @@ function renderTree() {
     class: 'node' + (currentFolder === '' ? ' active' : ''),
     onclick: () => { currentFolder = ''; renderTree(); renderEntries(); },
   }, '🗂 Alle Einträge', el('span', { class: 'count' }, data.entries.length));
+  dropTarget(all, '', 'Alle Einträge');
   $('folder-tree').replaceChildren(el('li', {}, all), ...childrenOf('').map(folderNode));
   $('list-title').textContent = currentFolder ? folderPath(currentFolder) : 'Alle Einträge';
   $('btn-edit-folder').classList.toggle('hidden', !currentFolder);
@@ -460,8 +506,8 @@ function renderEntries() {
     .filter((e) => matches(e, searchTerm))
     .sort((a, b) => a.title.localeCompare(b.title, 'de'));
   const rows = list.map((e) => {
-    const tr = el('tr', { draggable: 'true', onclick: () => openEntry(e.id) },
-      el('td', { class: 'title' }, e.title,
+    const tr = el('tr', { draggable: 'true', title: 'Zum Verschieben auf einen Ordner links ziehen', onclick: () => openEntry(e.id) },
+      el('td', { class: 'title' }, el('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'), e.title,
         (searchTerm || !currentFolder) && e.folderId ? el('span', { class: 'folder-hint' }, folderPath(e.folderId)) : null),
       el('td', {}, e.username),
       passwordCell(e.id),
@@ -473,7 +519,7 @@ function renderEntries() {
         e.url ? el('button', { class: 'icon', title: 'URL öffnen', onclick: (ev) => { ev.stopPropagation(); openUrl(e.url); } }, '↗') : null,
         el('button', { class: 'icon del', title: 'Eintrag löschen', onclick: (ev) => { ev.stopPropagation(); deleteEntry(e.id, e.title); } }, '🗑'),
       ));
-    tr.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/entry-id', e.id));
+    tr.addEventListener('dragstart', (ev) => startDrag(ev, 'entry', e.id, e.title));
     return tr;
   });
   $('entry-rows').replaceChildren(...rows);
@@ -837,7 +883,11 @@ $('i-file').addEventListener('change', async (ev) => {
     const csv = await readFileText(ev.target);
     if (!csv) return;
     const r = await api('POST', 'import', { csv, folderId: currentFolder });
-    toast(`${r.imported} Einträge importiert`);
+    const names = { title: 'Titel', username: 'Benutzer', password: 'Passwort', url: 'URL', notes: 'Notizen', desc: 'Beschreibung', folder: 'Ordner', tags: 'Tags' };
+    const cols = r.columns || {};
+    const mapped = Object.keys(names).filter((f) => cols[f]).map((f) => `${cols[f]} → ${names[f]}`).join(', ');
+    toast(`${r.imported} Einträge importiert. Spalten: ${mapped}`, false, 8000);
+    if (r.ignored && r.ignored.length) toast(`Nicht übernommen: ${r.ignored.join(', ')}`, false, 8000);
     ev.target.value = '';
     await reload();
   } catch (e) { $('settings-error').textContent = e.message; }

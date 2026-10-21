@@ -153,20 +153,45 @@ func TestCSRFAndHost(t *testing.T) {
 
 func TestImportFormats(t *testing.T) {
 	v := newTestVault()
-	n, err := importCSV(v, "\uFEFFOrdner;Titel;Benutzername;Passwort;Tags\nA/B;x;u;p;eins; zwei\n", "")
-	if err != nil || n != 1 {
-		t.Fatalf("Semikolon-CSV: %d %v", n, err)
+	r, err := importCSV(v, "\uFEFFOrdner;Titel;Benutzername;Passwort;Tags\nA/B;x;u;p;eins; zwei\n", "")
+	if err != nil || r.Imported != 1 {
+		t.Fatalf("Semikolon-CSV: %+v %v", r, err)
 	}
 	if got := strings.Join(v.FolderPath(v.Data.Entries[0].FolderID), "/"); got != "A/B" {
 		t.Fatalf("Ordnerpfad %q", got)
 	}
-	n, err = importCSV(v, "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\nPrivat,,login,Mail,,,,https://mail,me,pw,\n", "")
-	if err != nil || n != 1 {
-		t.Fatalf("Bitwarden: %d %v", n, err)
+	r, err = importCSV(v, "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\nPrivat,,login,Mail,,,,https://mail,me,pw,\n", "")
+	if err != nil || r.Imported != 1 {
+		t.Fatalf("Bitwarden: %+v %v", r, err)
 	}
 	e := v.Data.Entries[len(v.Data.Entries)-1]
 	if e.Username != "me" || e.Password != "pw" || e.URL != "https://mail" {
 		t.Fatalf("Bitwarden-Eintrag: %+v", e)
+	}
+}
+
+func TestImportKeePass(t *testing.T) {
+	v := newTestVault()
+	// KeePass 2.x, Export "KeePass CSV (1.x)"
+	r, err := importCSV(v, "\"Account\",\"Login Name\",\"Password\",\"Web Site\",\"Comments\"\n\"Mail\",\"rene@example.de\",\"pw\",\"https://mail\",\"Notiz\"\n", "")
+	if err != nil || r.Imported != 1 || r.Columns["username"] != "Login Name" {
+		t.Fatalf("KeePass 2: %+v %v", r, err)
+	}
+	e := v.Data.Entries[0]
+	if e.Title != "Mail" || e.Username != "rene@example.de" || e.URL != "https://mail" || e.Notes != "Notiz" {
+		t.Fatalf("KeePass-2-Eintrag: %+v", e)
+	}
+	// KeePassXC
+	r, err = importCSV(v, "\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\",\"TOTP\",\"Icon\",\"Last Modified\",\"Created\"\n\"Root/Internet\",\"Forum\",\"rene\",\"pw\",\"\",\"\",\"\",\"0\",\"\",\"\"\n", "")
+	if err != nil || r.Imported != 1 {
+		t.Fatalf("KeePassXC: %+v %v", r, err)
+	}
+	e = v.Data.Entries[1]
+	if e.Username != "rene" || strings.Join(v.FolderPath(e.FolderID), "/") != "Internet" {
+		t.Fatalf("KeePassXC-Eintrag: %+v in %v", e, v.FolderPath(e.FolderID))
+	}
+	if len(r.Ignored) != 4 {
+		t.Fatalf("ignorierte Spalten: %v", r.Ignored)
 	}
 }
 
