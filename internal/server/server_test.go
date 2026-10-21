@@ -46,7 +46,7 @@ func (c *client) do(method, path string, body any) (int, map[string]any) {
 
 func startServer(t *testing.T) (*Server, *client, string) {
 	path := filepath.Join(t.TempDir(), "test.vault")
-	s := New(path, fstest.MapFS{"index.html": {Data: []byte("hi")}})
+	s := New(path, "", fstest.MapFS{"index.html": {Data: []byte("hi")}})
 	ln, launch, err := s.Listen("0")
 	if err != nil {
 		t.Fatal(err)
@@ -176,3 +176,38 @@ func mustJSON(v any) string {
 }
 
 func newTestVault() *vault.Vault { return &vault.Vault{} }
+
+func TestSelectAndMoveVault(t *testing.T) {
+	s, c, launch := startServer(t)
+	c.http.Get(launch)
+	dir := t.TempDir()
+	s.configPath = filepath.Join(dir, "passmind.json")
+
+	// Ordner auflisten
+	if code, l := c.do("GET", "api/fs?path="+dir, nil); code != 200 || l["path"] != dir {
+		t.Fatalf("fs: %d %v", code, l)
+	}
+	// Ordner wählen -> passmind.vault darin
+	code, sel := c.do("POST", "api/vault/select", map[string]string{"path": dir})
+	if code != 200 || sel["path"] != filepath.Join(dir, "passmind.vault") || sel["exists"] != false {
+		t.Fatalf("select: %d %v", code, sel)
+	}
+	if code, _ := c.do("POST", "api/vault/select", map[string]string{"path": filepath.Join(dir, "gibtsnicht", "x.vault")}); code != http.StatusBadRequest {
+		t.Fatal("nicht existierender Ordner akzeptiert")
+	}
+
+	// Anlegen und verschieben
+	_, setup := c.do("POST", "api/setup/totp", nil)
+	code6, _ := totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/setup", map[string]string{"password": "ein-langes-passwort", "code": code6})
+	target := filepath.Join(dir, "nas.vault")
+	if code, mv := c.do("POST", "api/vault/move", map[string]string{"path": target}); code != 200 || mv["path"] != target {
+		t.Fatalf("move: %d %v", code, mv)
+	}
+	if LoadConfig(s.configPath).VaultPath != target {
+		t.Fatal("Konfiguration merkt sich den neuen Ort nicht")
+	}
+	if _, st := c.do("GET", "api/status", nil); st["path"] != target {
+		t.Fatalf("Status-Pfad: %v", st["path"])
+	}
+}

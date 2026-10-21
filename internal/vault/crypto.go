@@ -121,20 +121,29 @@ func open(raw []byte, password string, keyFile []byte) (plaintext []byte, key []
 	if err != nil {
 		return nil, nil, h, err
 	}
-	block, err := aes.NewCipher(key)
+	pt, err := decrypt(key, h, ff)
 	if err != nil {
 		return nil, nil, h, err
+	}
+	return pt, key, h, nil
+}
+
+// decrypt entschlüsselt den Inhalt mit einem bereits abgeleiteten Schlüssel.
+func decrypt(key []byte, h Header, ff fileFormat) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, nil, h, err
+		return nil, err
 	}
 	if len(h.Nonce) != gcm.NonceSize() {
-		return nil, nil, h, errors.New("ungültige Nonce im Tresorkopf")
+		return nil, errors.New("ungültige Nonce im Tresorkopf")
 	}
 	pt, err := gcm.Open(nil, h.Nonce, ff.Ciphertext, []byte(ff.Header))
 	if err != nil {
-		return nil, nil, h, ErrBadCredentials
+		return nil, ErrBadCredentials
 	}
-	return pt, key, h, nil
+	return pt, nil
 }

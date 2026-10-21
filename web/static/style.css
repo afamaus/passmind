@@ -1,42 +1,50 @@
+/* Dunkles Design im Stil des PassMind-Logos (Standard). Helles Design über data-theme="light". */
 :root {
-  --bg: #f4f6fa;
+  --bg: #060a0e;
+  --bg-glow: rgba(25, 211, 197, .10);
+  --surface: #0c1419;
+  --surface-2: #122027;
+  --text: #d9e8ea;
+  --muted: #7f9aa1;
+  --border: #1b2d34;
+  --accent: #19d3c5;
+  --accent-2: #3ee88a;
+  --accent-hover: #4fe3d8;
+  --on-accent: #032421;
+  --danger: #ff6b6b;
+  --ok: #3ee88a;
+  --warn: #f0b429;
+  --radius: 8px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, .6), 0 0 0 1px rgba(25, 211, 197, .06);
+  --glow: 0 0 18px rgba(25, 211, 197, .35);
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f4f7f8;
+  --bg-glow: rgba(14, 138, 138, .06);
   --surface: #ffffff;
-  --surface-2: #eef1f6;
-  --text: #1c2230;
-  --muted: #667085;
-  --border: #d9dee7;
+  --surface-2: #eaf1f2;
+  --text: #15232a;
+  --muted: #5d7279;
+  --border: #d3e0e3;
   --accent: #0e8a8a;
+  --accent-2: #1f9d5c;
   --accent-hover: #0b7070;
   --on-accent: #ffffff;
   --danger: #c93a3a;
   --ok: #2e9e5b;
-  --warn: #d08a12;
-  --radius: 8px;
+  --warn: #b7791f;
   --shadow: 0 8px 30px rgba(20, 30, 50, .12);
+  --glow: none;
   color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11151c;
-    --surface: #1a2029;
-    --surface-2: #232b36;
-    --text: #e6e9ef;
-    --muted: #97a1b3;
-    --border: #2f3946;
-    --accent: #2cc4bd;
-    --accent-hover: #5ad8d2;
-    --on-accent: #052726;
-    --danger: #e26060;
-    --shadow: 0 8px 30px rgba(0, 0, 0, .45);
-    color-scheme: dark;
-  }
 }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
   margin: 0;
-  background: var(--bg);
+  background: radial-gradient(ellipse 80% 60% at 70% -10%, var(--bg-glow), transparent 70%), var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -186,3 +194,45 @@ dialog::backdrop { background: rgba(10, 15, 25, .5); }
   .hide-sm { display: none; }
   .content { padding: 12px; }
 }
+
+/* Logo unten in der Seitenleiste */
+.sidebar { display: flex; flex-direction: column; }
+.sidebar .tree { flex: 1; }
+.sidebar-brand { padding: 12px; display: flex; justify-content: flex-end; }
+.sidebar-brand img { width: 100%; max-width: 230px; border-radius: 8px; display: block; box-shadow: 0 2px 10px rgba(0, 0, 0, .15); }
+
+/* Passwort-Spalte */
+.pw-cell { white-space: nowrap; }
+.pw-cell .pw { font-family: ui-monospace, Consolas, monospace; display: inline-block; min-width: 90px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.pw-cell .pw.shown { color: var(--accent); }
+.pw-cell .icon { height: 26px; min-width: 28px; font-size: 13px; margin-left: 4px; vertical-align: middle; }
+
+/* Speicherort-Auswahl */
+.browser { list-style: none; margin: 10px 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; max-height: 300px; overflow-y: auto; }
+.browser li { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+.browser li:last-child { border-bottom: 0; }
+.browser li:hover { background: var(--surface-2); }
+.browser li.vault { font-weight: 600; color: var(--accent); }
+.browser li.empty { color: var(--muted); cursor: default; }
+.browse-roots { margin-top: 8px; }
+.browse-roots .btn { padding: 4px 10px; font-size: 12px; }
+.recent { margin: 8px 0 4px; }
+.recent .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.recent a { display: block; font-family: ui-monospace, Consolas, monospace; font-size: 12px; padding: 3px 0; word-break: break-all; }
+
+@media (max-width: 760px) {
+  .sidebar-brand { display: none; }
+}
+
+
+/* Akzente im Logo-Stil */
+.btn:not(.secondary):not(.danger) { background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: var(--glow); }
+.btn:not(.secondary):not(.danger):hover { filter: brightness(1.08); }
+.topbar { background: linear-gradient(180deg, var(--surface), var(--bg)); }
+.brand .mind { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.card { border-color: var(--border); box-shadow: var(--shadow), var(--glow); }
+.tree .node.active { box-shadow: inset 3px 0 0 var(--accent); border-left-color: transparent; }
+.entries tbody tr:hover td.title { color: var(--accent); }
+input:focus, select:focus, textarea:focus { box-shadow: var(--glow); }
+.sidebar-brand img { box-shadow: 0 0 20px rgba(25, 211, 197, .18); }
+.entries .actions .icon.del:hover { color: var(--danger); border-color: var(--danger); }

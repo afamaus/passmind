@@ -2,6 +2,7 @@ package vault
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,9 +13,10 @@ import (
 
 // Folder entspricht einem Ordner bzw. einer Passwortliste in der Baumansicht.
 type Folder struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	ParentID string `json:"parentId,omitempty"`
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	ParentID string    `json:"parentId,omitempty"`
+	Updated  time.Time `json:"updated,omitempty"`
 }
 
 // HistoryItem hält ein früheres Passwort eines Eintrags fest.
@@ -40,22 +42,32 @@ type Entry struct {
 
 // MFA enthält das TOTP-Geheimnis und die gehashten Wiederherstellungscodes.
 type MFA struct {
-	TOTPSecret    string   `json:"totpSecret"`
-	RecoveryCodes []string `json:"recoveryCodes"` // SHA-256 als Hex
+	TOTPSecret    string    `json:"totpSecret"`
+	RecoveryCodes []string  `json:"recoveryCodes"` // SHA-256 als Hex
+	ChangedAt     time.Time `json:"changedAt,omitempty"`
 }
 
 // Settings sind Benutzereinstellungen, die mit im Tresor gespeichert werden.
 type Settings struct {
-	AutoLockMinutes  int `json:"autoLockMinutes"`
-	ClipboardSeconds int `json:"clipboardSeconds"`
+	AutoLockMinutes  int       `json:"autoLockMinutes"`
+	ClipboardSeconds int       `json:"clipboardSeconds"`
+	ChangedAt        time.Time `json:"changedAt,omitempty"`
+}
+
+// Tombstone merkt sich gelöschte Einträge und Ordner, damit das Zusammenführen
+// mit einer auf einem anderen Gerät geänderten Fassung sie nicht wieder auferstehen lässt.
+type Tombstone struct {
+	ID string    `json:"id"`
+	At time.Time `json:"at"`
 }
 
 // Data ist der komplette entschlüsselte Inhalt des Tresors.
 type Data struct {
-	Folders  []Folder `json:"folders"`
-	Entries  []Entry  `json:"entries"`
-	MFA      MFA      `json:"mfa"`
-	Settings Settings `json:"settings"`
+	Folders  []Folder    `json:"folders"`
+	Entries  []Entry     `json:"entries"`
+	MFA      MFA         `json:"mfa"`
+	Settings Settings    `json:"settings"`
+	Deleted  []Tombstone `json:"deleted,omitempty"`
 }
 
 // Vault ist ein geöffneter (entschlüsselter) Tresor.
@@ -64,6 +76,7 @@ type Vault struct {
 	key           []byte
 	kdf           KDFParams
 	keyFileNeeded bool
+	lastHash      [32]byte // Hash der Datei, wie wir sie zuletzt gelesen oder geschrieben haben
 	Data          Data
 }
 
@@ -130,7 +143,7 @@ func Open(path, password string, keyFile []byte) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Vault{path: path, key: key, kdf: h.KDF, keyFileNeeded: h.KeyFileNeeded}
+	v := &Vault{path: path, key: key, kdf: h.KDF, keyFileNeeded: h.KeyFileNeeded, lastHash: sha256.Sum256(raw)}
 	if err := json.Unmarshal(pt, &v.Data); err != nil {
 		return nil, errors.New("Tresorinhalt ist beschädigt")
 	}
@@ -144,8 +157,17 @@ func Open(path, password string, keyFile []byte) (*Vault, error) {
 	return v, nil
 }
 
-// Save verschlüsselt den Tresor und schreibt ihn atomar. Die vorherige Fassung bleibt als .bak erhalten.
+// Save verschlüsselt den Tresor und schreibt ihn atomar. Hat ein anderes Gerät die Datei
+// inzwischen geändert (z. B. auf einem NAS), werden dessen Änderungen vorher übernommen.
+// Die vorherige Fassung bleibt als .bak erhalten.
 func (v *Vault) Save() error {
+	if _, err := v.Refresh(); err != nil {
+		return err
+	}
+	return v.write()
+}
+
+func (v *Vault) write() error {
 	pt, err := json.Marshal(v.Data)
 	if err != nil {
 		return err
@@ -178,7 +200,32 @@ func (v *Vault) Save() error {
 			_ = os.WriteFile(v.path+".bak", old, 0o600)
 		}
 	}
-	return os.Rename(tmpName, v.path)
+	if err := os.Rename(tmpName, v.path); err != nil {
+		return err
+	}
+	v.lastHash = sha256.Sum256(out)
+	return nil
+}
+
+// Path liefert den Speicherort der Tresordatei.
+func (v *Vault) Path() string { return v.path }
+
+// MoveTo speichert den Tresor an einem neuen Ort und arbeitet ab dann dort weiter.
+// Die alte Datei bleibt unverändert liegen.
+func (v *Vault) MoveTo(path string) error {
+	if Exists(path) {
+		return errors.New("am Zielort existiert bereits eine Datei")
+	}
+	if _, err := v.Refresh(); err != nil {
+		return err
+	}
+	old := v.path
+	v.path = path
+	if err := v.write(); err != nil {
+		v.path = old
+		return err
+	}
+	return nil
 }
 
 // ChangeCredentials setzt ein neues Master-Passwort und/oder eine neue Schlüsseldatei (nil = keine).
@@ -191,9 +238,13 @@ func (v *Vault) ChangeCredentials(password string, keyFile []byte) error {
 	if err != nil {
 		return err
 	}
+	// Änderungen anderer Geräte noch mit dem alten Schlüssel übernehmen, dann neu verschlüsseln.
+	if _, err := v.Refresh(); err != nil {
+		return err
+	}
 	oldKey, oldKDF, oldKF := v.key, v.kdf, v.keyFileNeeded
 	v.key, v.kdf, v.keyFileNeeded = key, kdf, len(keyFile) > 0
-	if err := v.Save(); err != nil {
+	if err := v.write(); err != nil {
 		v.key, v.kdf, v.keyFileNeeded = oldKey, oldKDF, oldKF
 		return err
 	}
@@ -246,6 +297,7 @@ func (v *Vault) DeleteEntry(id string) bool {
 	for i, e := range v.Data.Entries {
 		if e.ID == id {
 			v.Data.Entries = append(v.Data.Entries[:i], v.Data.Entries[i+1:]...)
+			v.tombstone(id)
 			return true
 		}
 	}
@@ -275,6 +327,7 @@ func (v *Vault) UpsertFolder(f Folder) (Folder, error) {
 			}
 		}
 	}
+	f.Updated = time.Now().UTC()
 	for i := range v.Data.Folders {
 		if v.Data.Folders[i].ID == f.ID {
 			v.Data.Folders[i] = f
@@ -302,6 +355,8 @@ func (v *Vault) DeleteFolder(id string) {
 	for _, f := range v.Data.Folders {
 		if !doomed[f.ID] {
 			folders = append(folders, f)
+		} else {
+			v.tombstone(f.ID)
 		}
 	}
 	v.Data.Folders = folders
@@ -309,6 +364,8 @@ func (v *Vault) DeleteFolder(id string) {
 	for _, e := range v.Data.Entries {
 		if !doomed[e.FolderID] {
 			entries = append(entries, e)
+		} else {
+			v.tombstone(e.ID)
 		}
 	}
 	v.Data.Entries = entries

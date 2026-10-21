@@ -25,7 +25,7 @@ func main() {
 		}
 		defaultVault = filepath.Join(filepath.Dir(exe), defaultVault)
 	}
-	vaultPath := flag.String("vault", defaultVault, "Pfad zur Tresordatei")
+	vaultPath := flag.String("vault", "", "Pfad zur Tresordatei (Standard: zuletzt verwendeter Tresor, sonst passmind.vault neben dem Programm)")
 	port := flag.String("port", "0", "Port auf 127.0.0.1 (0 = automatisch)")
 	noBrowser := flag.Bool("no-browser", false, "Browser nicht automatisch öffnen")
 	showVersion := flag.Bool("version", false, "Version anzeigen")
@@ -35,12 +35,20 @@ func main() {
 		fmt.Println("PassMind", version)
 		return
 	}
-	abs, err := filepath.Abs(*vaultPath)
+	configPath := server.ConfigPath(filepath.Dir(defaultVault))
+	chosen := *vaultPath
+	if chosen == "" {
+		chosen = server.LoadConfig(configPath).VaultPath
+	}
+	if chosen == "" {
+		chosen = defaultVault
+	}
+	abs, err := filepath.Abs(chosen)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	srv := server.New(abs, web.Static())
+	srv := server.New(abs, configPath, web.Static())
 	ln, url, err := srv.Listen(*port)
 	if err != nil {
 		log.Fatalf("Port konnte nicht geöffnet werden: %v", err)
