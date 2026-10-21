@@ -18,7 +18,9 @@
     <ol class="steps"><li data-step="1">Master-Passwort</li><li data-step="2">Authenticator</li><li data-step="3">Wiederherstellung</li></ol>
 
     <form id="setup-step1" class="step">
-      <p class="muted">Der Tresor wird hier gespeichert:<br><code id="setup-path"></code></p>
+      <p class="warn hidden" id="setup-missing">Hier lag früher ein Tresor, er ist aber gerade nicht erreichbar (z.&nbsp;B. NAS ausgeschaltet oder Laufwerk nicht verbunden). Lege nur dann einen neuen an, wenn du das wirklich willst.</p>
+      <p class="muted">Der Tresor wird hier gespeichert:<br><code id="setup-path" class="break"></code><br>
+        <a href="#" class="choose-vault">Anderen Speicherort oder vorhandenen Tresor wählen</a></p>
       <label>Master-Passwort
         <input type="password" id="setup-pw" autocomplete="new-password" required minlength="10">
       </label>
@@ -68,7 +70,9 @@
 <section id="view-unlock" class="view auth hidden">
   <form class="card" id="unlock-form">
     <h1><img src="logo.png" alt="" class="logo"> PassMind</h1>
-    <p class="muted">Tresor: <code id="unlock-path"></code></p>
+    <p class="muted">Tresor: <code id="unlock-path" class="break"></code><br>
+      <a href="#" class="choose-vault">Anderen Tresor öffnen</a></p>
+    <div id="unlock-recent" class="recent hidden"></div>
     <label>Master-Passwort
       <input type="password" id="unlock-pw" autocomplete="current-password" required>
     </label>
@@ -106,6 +110,7 @@
         <button class="icon" id="btn-new-folder" title="Neuer Ordner">＋</button>
       </div>
       <ul id="folder-tree" class="tree"></ul>
+      <div class="sidebar-brand"><img src="banner.jpg" alt="PassMind – Portable Password Manager"></div>
     </aside>
     <main class="content">
       <div class="content-head">
@@ -117,7 +122,7 @@
         </div>
       </div>
       <table class="entries">
-        <thead><tr><th>Titel</th><th>Benutzer</th><th class="hide-sm">URL</th><th class="hide-sm">Tags</th><th class="actions">Aktionen</th></tr></thead>
+        <thead><tr><th>Titel</th><th>Benutzer</th><th>Passwort</th><th class="hide-sm">URL</th><th class="hide-sm">Tags</th><th class="actions">Aktionen</th></tr></thead>
         <tbody id="entry-rows"></tbody>
       </table>
       <p id="empty-hint" class="muted hidden">Keine Einträge. Lege mit „Neuer Eintrag“ den ersten an.</p>
@@ -242,6 +247,13 @@
       <button type="submit" class="btn">Speichern</button>
     </form>
 
+    <div class="section">
+      <h3>Speicherort des Tresors</h3>
+      <p class="muted"><code id="s-path" class="break"></code></p>
+      <p class="muted">Zum Beispiel auf ein NAS oder Netzlaufwerk verschieben, um den Tresor von mehreren Rechnern zu nutzen. Änderungen anderer Rechner werden automatisch zusammengeführt. Die bisherige Datei bleibt als Kopie liegen.</p>
+      <button type="button" class="btn secondary" id="s-move">Verschieben …</button>
+    </div>
+
     <form id="cred-form" class="section">
       <h3>Master-Passwort / Schlüsseldatei ändern</h3>
       <label>Aktuelles Master-Passwort <input type="password" id="c-current" autocomplete="current-password" required></label>
@@ -284,6 +296,26 @@
     <p class="error" id="settings-error"></p>
     <div class="row end"><button type="button" class="btn secondary" data-close>Schließen</button></div>
   </div>
+</dialog>
+
+<!-- Dialog: Speicherort wählen -->
+<dialog id="dlg-browse" class="wide">
+  <form id="browse-form" method="dialog">
+    <h2 id="browse-title">Speicherort wählen</h2>
+    <p class="muted" id="browse-hint"></p>
+    <div class="input-group">
+      <input type="text" id="browse-path" class="mono" placeholder="Ordner, z. B. \\NAS\Freigabe oder /Volumes/NAS">
+      <button type="button" class="icon" id="browse-go" title="Öffnen">→</button>
+    </div>
+    <div class="row browse-roots" id="browse-roots"></div>
+    <ul class="browser" id="browse-list"></ul>
+    <label>Dateiname <input type="text" id="browse-name" value="passmind.vault"></label>
+    <p class="error" id="browse-error"></p>
+    <div class="row end">
+      <button type="button" class="btn secondary" data-close>Abbrechen</button>
+      <button type="submit" class="btn" id="browse-ok">Hier verwenden</button>
+    </div>
+  </form>
 </dialog>
 
 <div id="toasts"></div>

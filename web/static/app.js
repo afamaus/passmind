@@ -15,7 +15,7 @@ async function api(method, path, body) {
   if (!res.ok) {
     let msg = 'Fehler ' + res.status;
     if (type.includes('json')) msg = (await res.json()).error || msg;
-    if (res.status === 423) { showLocked(); }
+    if (res.status === 423) { showLocked(msg === 'Tresor ist gesperrt' ? '' : msg); }
     throw new Error(msg);
   }
   if (type.includes('json')) return res.json();
@@ -164,6 +164,7 @@ function setStep(n) {
 function startSetup() {
   show('view-setup');
   $('setup-path').textContent = status.path;
+  $('setup-missing').classList.toggle('hidden', !status.missingKnown);
   setStep(1);
   $('setup-pw').focus();
 }
@@ -221,12 +222,17 @@ $('setup-done').addEventListener('click', () => {
 
 let useRecovery = false;
 
-async function showLocked() {
+async function showLocked(message) {
   closeAllDialogs();
   try { status = await api('GET', 'status'); } catch { /* bleibt beim alten Status */ }
   if (!status.exists) { startSetup(); return; }
   show('view-unlock');
   $('unlock-path').textContent = status.path;
+  $('unlock-error').textContent = message || '';
+  const others = (status.recent || []).filter((p) => p !== status.path);
+  $('unlock-recent').classList.toggle('hidden', others.length === 0);
+  $('unlock-recent').replaceChildren(el('div', { class: 'label' }, 'Zuletzt verwendet:'),
+    ...others.map((p) => el('a', { href: '#', onclick: (ev) => { ev.preventDefault(); selectVault(p); } }, p)));
   $('unlock-keyfile-wrap').classList.toggle('hidden', !status.keyFileNeeded);
   $('unlock-pw').value = '';
   $('unlock-code').value = '';
@@ -368,6 +374,7 @@ function renderEntries() {
       el('td', { class: 'title' }, e.title,
         (searchTerm || !currentFolder) && e.folderId ? el('span', { class: 'folder-hint' }, folderPath(e.folderId)) : null),
       el('td', {}, e.username),
+      passwordCell(e.id),
       el('td', { class: 'url hide-sm' }, e.url),
       el('td', { class: 'hide-sm' }, (e.tags || []).map((t) => el('span', { class: 'tag' }, t))),
       el('td', { class: 'actions' },
@@ -381,6 +388,28 @@ function renderEntries() {
   $('entry-rows').replaceChildren(...rows);
   $('empty-hint').classList.toggle('hidden', rows.length > 0);
   $('empty-hint').textContent = searchTerm ? 'Keine Treffer.' : 'Keine Einträge. Lege mit „Neuer Eintrag“ den ersten an.';
+}
+
+const MASK = '••••••••';
+
+// Passwort in der Liste: verdeckt, per Auge für 5 Sekunden sichtbar.
+function passwordCell(id) {
+  const text = el('span', { class: 'pw' }, MASK);
+  let timer = null;
+  const eye = el('button', {
+    class: 'icon', title: 'Passwort 5 Sekunden anzeigen',
+    onclick: async (ev) => {
+      ev.stopPropagation();
+      if (timer) { clearTimeout(timer); timer = null; text.textContent = MASK; text.classList.remove('shown'); return; }
+      try {
+        const e = await api('GET', 'entries/' + id);
+        text.textContent = e.password || '(leer)';
+        text.classList.add('shown');
+        timer = setTimeout(() => { text.textContent = MASK; text.classList.remove('shown'); timer = null; }, 5000);
+      } catch (err) { toast(err.message, true); }
+    },
+  }, '👁');
+  return el('td', { class: 'pw-cell' }, text, eye);
 }
 
 async function copyPassword(id) {
@@ -578,6 +607,7 @@ function openSettings() {
   $('s-autolock').value = data.settings.autoLockMinutes;
   $('s-clipboard').value = data.settings.clipboardSeconds;
   $('s-recovery-left').textContent = data.recoveryRemaining;
+  $('s-path').textContent = data.path;
   for (const x of document.querySelectorAll('.kf-current')) x.classList.toggle('hidden', !data.keyFileNeeded);
   $('mfa-reset-form').classList.remove('hidden');
   $('mfa-confirm-form').classList.add('hidden');
@@ -667,6 +697,87 @@ $('export-form').addEventListener('submit', async (ev) => {
     $('x-pw').value = '';
     toast('Export erstellt. Datei nach Gebrauch sicher löschen!', false, 6000);
   } catch (e) { $('settings-error').textContent = e.message; }
+});
+
+// ---------- Speicherort ----------
+
+let browseMode = 'select';   // 'select' (gesperrt: Tresor wählen/anlegen) oder 'move' (geöffneten Tresor verschieben)
+let browseDir = '';
+let browseSep = '/';
+
+function joinPath(dir, name) {
+  return dir.endsWith(browseSep) ? dir + name : dir + browseSep + name;
+}
+
+async function browse(path) {
+  $('browse-error').textContent = '';
+  try {
+    const r = await api('GET', 'fs' + (path ? '?path=' + encodeURIComponent(path) : ''));
+    browseDir = r.path;
+    browseSep = r.sep;
+    $('browse-path').value = r.path;
+    const shortcuts = [...(r.home ? [['🏠 Benutzerordner', r.home]] : []), ...r.roots.map((x) => ['💽 ' + x, x])];
+    $('browse-roots').replaceChildren(...shortcuts.map(([label, p]) =>
+      el('button', { type: 'button', class: 'btn secondary', onclick: () => browse(p) }, label)));
+    const items = [];
+    if (r.parent) items.push(el('li', { onclick: () => browse(r.parent) }, '⬆ ', '.. (übergeordneter Ordner)'));
+    for (const d of r.dirs) items.push(el('li', { onclick: () => browse(joinPath(r.path, d)) }, '📁 ', d));
+    for (const v of r.vaults) {
+      items.push(el('li', { class: 'vault', onclick: () => { $('browse-name').value = v; } }, '🔐 ', v));
+    }
+    if (!r.dirs.length && !r.vaults.length) items.push(el('li', { class: 'empty' }, 'Keine Unterordner oder Tresore'));
+    $('browse-list').replaceChildren(...items);
+  } catch (e) {
+    $('browse-error').textContent = e.message;
+  }
+}
+
+function openBrowser(mode) {
+  browseMode = mode;
+  const current = mode === 'move' ? data.path : status.path;
+  const name = (current || '').split(/[\\/]/).pop() || 'passmind.vault';
+  $('browse-name').value = mode === 'move' ? 'passmind.vault' : name;
+  $('browse-title').textContent = mode === 'move' ? 'Tresor verschieben' : 'Tresor wählen oder neu anlegen';
+  $('browse-hint').textContent = mode === 'move'
+    ? 'Ordner wählen, z. B. ein Netzlaufwerk auf dem NAS. Netzwerkpfade wie \\\\NAS\\Freigabe kannst du oben direkt eintippen.'
+    : 'Vorhandene .vault-Datei anklicken oder Ordner und Dateinamen für einen neuen Tresor wählen.';
+  $('browse-ok').textContent = mode === 'move' ? 'Hierhin verschieben' : 'Diesen Tresor verwenden';
+  $('dlg-browse').showModal();
+  browse('');
+}
+
+async function selectVault(path) {
+  try {
+    const r = await api('POST', 'vault/select', { path });
+    $('dlg-browse').close();
+    toast(r.exists ? 'Tresor gewählt' : 'Neuer Speicherort gewählt');
+    status = await api('GET', 'status');
+    if (status.exists) showLocked(); else startSetup();
+  } catch (e) {
+    $('browse-error').textContent = e.message;
+    if (!$('dlg-browse').open) toast(e.message, true);
+  }
+}
+
+$('browse-go').addEventListener('click', () => browse($('browse-path').value));
+$('browse-path').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); browse($('browse-path').value); } });
+for (const a of document.querySelectorAll('.choose-vault')) {
+  a.addEventListener('click', (ev) => { ev.preventDefault(); openBrowser('select'); });
+}
+$('s-move').addEventListener('click', () => openBrowser('move'));
+
+$('browse-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const dir = $('browse-path').value.trim() || browseDir;
+  const target = joinPath(dir, $('browse-name').value.trim() || 'passmind.vault');
+  if (browseMode === 'select') { selectVault(target); return; }
+  try {
+    const r = await api('POST', 'vault/move', { path: target });
+    $('dlg-browse').close();
+    toast(`Tresor verschoben. Die alte Datei liegt weiterhin unter ${r.oldPath}.`, false, 8000);
+    await reload();
+    $('s-path').textContent = data.path;
+  } catch (e) { $('browse-error').textContent = e.message; }
 });
 
 // ---------- Sperren, Beenden, Aktivität ----------

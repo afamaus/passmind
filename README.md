@@ -7,7 +7,8 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 ## So funktioniert es
 
 - Beim Start öffnet PassMind einen kleinen Webserver **nur auf 127.0.0.1** und öffnet die Oberfläche im Standardbrowser.
-- Der Tresor ist eine verschlüsselte Datei `passmind.vault` **direkt neben dem Programm**. Programm und Tresor zusammen auf den Stick kopieren, fertig.
+- Der Tresor ist eine verschlüsselte Datei, standardmäßig `passmind.vault` **direkt neben dem Programm**. Programm und Tresor zusammen auf den Stick kopieren, fertig.
+- Der Speicherort ist frei wählbar (beim Einrichten, beim Entsperren oder später unter Einstellungen → „Verschieben …“). PassMind merkt sich den Tresor in `passmind.json` neben dem Programm.
 - Beim Speichern wird die vorherige Fassung als `passmind.vault.bak` behalten.
 
 ## Funktionen
@@ -23,6 +24,15 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 - **MFA beim Start**: Master-Passwort plus 6-stelliger Code aus einer Authenticator-App (TOTP), dazu 8 Wiederherstellungscodes
 - Optional eine **Schlüsseldatei** als zusätzlicher Schlüssel
 - CSV-Import (Passwordstate, KeePass, Bitwarden, Excel mit Komma oder Semikolon) und CSV-Export
+- Passwort direkt in der Liste per Auge für 5 Sekunden anzeigen
+- **Tresor auf NAS oder Netzlaufwerk**: mehrere Rechner können denselben Tresor nutzen
+
+## Tresor auf dem NAS
+
+1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux.
+2. Auf den anderen Rechnern PassMind starten und beim Entsperren „Anderen Tresor öffnen“ wählen.
+
+Ändern zwei Rechner gleichzeitig etwas, führt PassMind die Änderungen beim Speichern zusammen: Pro Eintrag gewinnt die neuere Änderung, Löschungen werden übernommen. Die Uhrzeit der Rechner sollte daher stimmen. Wird auf einem Rechner das Master-Passwort geändert, müssen sich die anderen neu anmelden.
 
 ## Starten
 

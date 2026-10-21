@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"log"
 	"net/http"
 	"slices"
@@ -25,7 +26,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"exists":   vault.Exists(s.vaultPath),
 		"unlocked": s.v != nil,
 		"path":     s.vaultPath,
+		"recent":   s.cfg.Recent,
 	}
+	// Früher benutzter Tresor ist nicht erreichbar (z. B. NAS aus): nicht einfach einen neuen anlegen lassen.
+	resp["missingKnown"] = !resp["exists"].(bool) && slices.Contains(s.cfg.Recent, s.vaultPath)
 	if s.v != nil {
 		resp["settings"] = s.v.Data.Settings
 		resp["keyFileNeeded"] = s.v.KeyFileNeeded()
@@ -105,7 +109,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plain, hashes := totp.NewRecoveryCodes(8)
-	v, err := vault.Create(s.vaultPath, req.Password, kf, vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes})
+	v, err := vault.Create(s.vaultPath, req.Password, kf, vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes, ChangedAt: time.Now().UTC()})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "Tresor konnte nicht angelegt werden: "+err.Error())
 		return
@@ -113,6 +117,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	s.pending = nil
 	s.v = v
 	s.lastActivity = time.Now()
+	s.cfg.remember(s.vaultPath)
+	s.cfg.save(s.configPath)
 	log.Println("Neuer Tresor angelegt:", s.vaultPath)
 	writeJSON(w, map[string]any{"recoveryCodes": plain})
 }
@@ -155,6 +161,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 			h := totp.HashRecoveryCode(req.RecoveryCode)
 			if i := slices.Index(v.Data.MFA.RecoveryCodes, h); i >= 0 {
 				v.Data.MFA.RecoveryCodes = slices.Delete(v.Data.MFA.RecoveryCodes, i, i+1)
+				v.Data.MFA.ChangedAt = time.Now().UTC()
 				mfaOK, usedRecovery = v.Save() == nil, true
 			}
 		} else {
@@ -176,6 +183,8 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	s.failures = 0
 	s.v = v
 	s.lastActivity = time.Now()
+	s.cfg.remember(s.vaultPath)
+	s.cfg.save(s.configPath)
 	remaining := len(v.Data.MFA.RecoveryCodes)
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{"ok": true, "recoveryUsed": usedRecovery, "recoveryRemaining": remaining})
@@ -223,6 +232,11 @@ type entrySummary struct {
 }
 
 func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
+	// Änderungen anderer Geräte (z. B. Tresor auf dem NAS) übernehmen.
+	if _, err := v.Refresh(); err != nil {
+		s.writeVaultErr(w, err)
+		return
+	}
 	list := make([]entrySummary, 0, len(v.Data.Entries))
 	for _, e := range v.Data.Entries {
 		list = append(list, entrySummary{e.ID, e.FolderID, e.Title, e.Username, e.URL, e.Notes, e.Tags, e.Updated})
@@ -233,6 +247,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vau
 		"settings":          v.Data.Settings,
 		"recoveryRemaining": len(v.Data.MFA.RecoveryCodes),
 		"keyFileNeeded":     v.KeyFileNeeded(),
+		"path":              v.Path(),
 	})
 }
 
@@ -315,6 +330,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, v *vault
 		writeErr(w, http.StatusBadRequest, "Zwischenablage: 5 bis 600 Sekunden")
 		return
 	}
+	st.ChangedAt = time.Now().UTC()
 	v.Data.Settings = st
 	if s.save(w, v) {
 		writeJSON(w, st)
@@ -353,7 +369,7 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, v *va
 	}
 	check.Close()
 	if err := v.ChangeCredentials(req.NewPassword, newKF); err != nil {
-		writeErr(w, http.StatusInternalServerError, "Speichern fehlgeschlagen: "+err.Error())
+		s.writeVaultErr(w, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -389,10 +405,10 @@ func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request, v *vau
 	}
 	plain, hashes := totp.NewRecoveryCodes(8)
 	old := v.Data.MFA
-	v.Data.MFA = vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes}
+	v.Data.MFA = vault.MFA{TOTPSecret: secret, RecoveryCodes: hashes, ChangedAt: time.Now().UTC()}
 	if err := v.Save(); err != nil {
 		v.Data.MFA = old
-		writeErr(w, http.StatusInternalServerError, "Speichern fehlgeschlagen: "+err.Error())
+		s.writeVaultErr(w, err)
 		return
 	}
 	s.pending = nil
@@ -401,8 +417,19 @@ func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request, v *vau
 
 func (s *Server) save(w http.ResponseWriter, v *vault.Vault) bool {
 	if err := v.Save(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "Speichern fehlgeschlagen: "+err.Error())
+		s.writeVaultErr(w, err)
 		return false
 	}
 	return true
+}
+
+// writeVaultErr meldet einen Speicherfehler. Wurden die Zugangsdaten auf einem anderen
+// Gerät geändert, wird der Tresor gesperrt, damit neu entsperrt werden kann; s.mu muss gehalten werden.
+func (s *Server) writeVaultErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, vault.ErrChangedElsewhere) {
+		s.lockLocked()
+		writeErr(w, http.StatusLocked, err.Error())
+		return
+	}
+	writeErr(w, http.StatusInternalServerError, "Speichern fehlgeschlagen: "+err.Error())
 }
