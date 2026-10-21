@@ -366,6 +366,7 @@ $('enroll-finish').addEventListener('click', () => {
 let data = { folders: [], entries: [], settings: {} };
 let currentFolder = '';   // '' = alle Einträge
 let searchTerm = '';
+const selected = new Set();   // ausgewählte Einträge (Auswahlkästchen)
 
 async function openMain() {
   await reload();
@@ -378,6 +379,7 @@ async function reload() {
   clipboardSeconds = data.settings.clipboardSeconds || 20;
   $('whoami').textContent = '👤 ' + data.user + (data.role === 'admin' ? ' (Admin)' : '');
   if (currentFolder && !data.folders.some((f) => f.id === currentFolder)) currentFolder = '';
+  $('bulk-folder').replaceChildren();
   renderTree();
   renderEntries();
 }
@@ -450,6 +452,10 @@ function dropTarget(node, targetId, targetName) {
     const d = dragging;
     if (!d || !canDrop(targetId)) return;
     try {
+      if (d.kind === 'entry' && selected.has(d.id) && selected.size > 1) {
+        await bulkMove([...selected], targetId);
+        return;
+      }
       if (d.kind === 'entry') {
         const full = await api('GET', 'entries/' + d.id);
         if (full.folderId === targetId) return;
@@ -473,7 +479,7 @@ function folderNode(f) {
     class: 'node' + (currentFolder === f.id ? ' active' : ''),
     draggable: 'true',
     title: 'Einträge oder Ordner hierher ziehen',
-    onclick: () => { currentFolder = f.id; renderTree(); renderEntries(); },
+    onclick: () => { currentFolder = f.id; selected.clear(); renderTree(); renderEntries(); },
   }, '📁 ', f.name, el('span', { class: 'count' }, count));
   node.addEventListener('dragstart', (ev) => { ev.stopPropagation(); startDrag(ev, 'folder', f.id, f.name); });
   dropTarget(node, f.id, f.name);
@@ -484,7 +490,7 @@ function folderNode(f) {
 function renderTree() {
   const all = el('div', {
     class: 'node' + (currentFolder === '' ? ' active' : ''),
-    onclick: () => { currentFolder = ''; renderTree(); renderEntries(); },
+    onclick: () => { currentFolder = ''; selected.clear(); renderTree(); renderEntries(); },
   }, '🗂 Alle Einträge', el('span', { class: 'count' }, data.entries.length));
   dropTarget(all, '', 'Alle Einträge');
   $('folder-tree').replaceChildren(el('li', {}, all), ...childrenOf('').map(folderNode));
@@ -506,7 +512,16 @@ function renderEntries() {
     .filter((e) => matches(e, searchTerm))
     .sort((a, b) => a.title.localeCompare(b.title, 'de'));
   const rows = list.map((e) => {
-    const tr = el('tr', { draggable: 'true', title: 'Zum Verschieben auf einen Ordner links ziehen', onclick: () => openEntry(e.id) },
+    const box = el('input', { type: 'checkbox', 'aria-label': 'Auswählen' });
+    box.checked = selected.has(e.id);
+    box.addEventListener('click', (ev) => ev.stopPropagation());
+    box.addEventListener('change', () => {
+      if (box.checked) selected.add(e.id); else selected.delete(e.id);
+      tr.classList.toggle('selected', box.checked);
+      updateBulkBar();
+    });
+    const tr = el('tr', { class: selected.has(e.id) ? 'selected' : '', draggable: 'true', title: 'Zum Verschieben auf einen Ordner links ziehen', onclick: () => openEntry(e.id) },
+      el('td', { class: 'sel', onclick: (ev) => { ev.stopPropagation(); if (ev.target !== box) box.click(); } }, box),
       el('td', { class: 'title' }, el('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'), e.title,
         (searchTerm || !currentFolder) && e.folderId ? el('span', { class: 'folder-hint' }, folderPath(e.folderId)) : null),
       el('td', {}, e.username),
@@ -519,13 +534,65 @@ function renderEntries() {
         e.url ? el('button', { class: 'icon', title: 'URL öffnen', onclick: (ev) => { ev.stopPropagation(); openUrl(e.url); } }, '↗') : null,
         el('button', { class: 'icon del', title: 'Eintrag löschen', onclick: (ev) => { ev.stopPropagation(); deleteEntry(e.id, e.title); } }, '🗑'),
       ));
-    tr.addEventListener('dragstart', (ev) => startDrag(ev, 'entry', e.id, e.title));
+    tr.addEventListener('dragstart', (ev) => startDrag(ev, 'entry', e.id, selected.has(e.id) && selected.size > 1 ? `${selected.size} Einträge` : e.title));
     return tr;
   });
+  visibleIds = list.map((e) => e.id);
   $('entry-rows').replaceChildren(...rows);
+  updateBulkBar();
   $('empty-hint').classList.toggle('hidden', rows.length > 0);
   $('empty-hint').textContent = searchTerm ? 'Keine Treffer.' : 'Keine Einträge. Lege mit „Neuer Eintrag“ den ersten an.';
 }
+
+// ---------- Mehrfachauswahl ----------
+
+let visibleIds = [];
+
+function updateBulkBar() {
+  // Nur noch vorhandene Einträge in der Auswahl behalten.
+  for (const id of selected) if (!data.entries.some((e) => e.id === id)) selected.delete(id);
+  const n = selected.size;
+  $('bulk-bar').classList.toggle('hidden', n === 0);
+  $('bulk-count').textContent = n === 1 ? '1 Eintrag ausgewählt' : `${n} Einträge ausgewählt`;
+  const visibleSel = visibleIds.filter((id) => selected.has(id)).length;
+  $('sel-all').checked = visibleIds.length > 0 && visibleSel === visibleIds.length;
+  $('sel-all').indeterminate = visibleSel > 0 && visibleSel < visibleIds.length;
+  if (n > 0 && !$('bulk-folder').options.length) {
+    fillFolderSelect($('bulk-folder'), currentFolder, { allowRoot: true });
+  }
+}
+
+$('sel-all').addEventListener('change', (ev) => {
+  for (const id of visibleIds) {
+    if (ev.target.checked) selected.add(id); else selected.delete(id);
+  }
+  renderEntries();
+});
+
+$('bulk-clear').addEventListener('click', () => { selected.clear(); renderEntries(); });
+
+async function bulkMove(ids, folderId) {
+  const r = await api('POST', 'entries/bulk', { action: 'move', ids, folderId });
+  const name = folderId ? data.folders.find((f) => f.id === folderId)?.name : 'kein Ordner';
+  toast(`${r.count} ${r.count === 1 ? 'Eintrag' : 'Einträge'} verschoben nach „${name}“`);
+  selected.clear();
+  await reload();
+}
+
+$('bulk-move').addEventListener('click', async () => {
+  try { await bulkMove([...selected], $('bulk-folder').value); } catch (e) { toast(e.message, true); }
+});
+
+$('bulk-delete').addEventListener('click', async () => {
+  const n = selected.size;
+  if (!confirm(`${n} ${n === 1 ? 'Eintrag' : 'Einträge'} wirklich löschen?`)) return;
+  try {
+    const r = await api('POST', 'entries/bulk', { action: 'delete', ids: [...selected] });
+    toast(`${r.count} ${r.count === 1 ? 'Eintrag' : 'Einträge'} gelöscht`);
+    selected.clear();
+    await reload();
+  } catch (e) { toast(e.message, true); }
+});
 
 const MASK = '••••••••';
 

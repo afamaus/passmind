@@ -379,6 +379,50 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request, v *va
 	}
 }
 
+// handleBulkEntries löscht oder verschiebt mehrere Einträge auf einmal (eine Speicherung).
+func (s *Server) handleBulkEntries(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
+	var req struct {
+		Action   string   `json:"action"`
+		IDs      []string `json:"ids"`
+		FolderID string   `json:"folderId"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "Keine Einträge ausgewählt")
+		return
+	}
+	n := 0
+	switch req.Action {
+	case "delete":
+		for _, id := range req.IDs {
+			if v.DeleteEntry(id) {
+				n++
+			}
+		}
+	case "move":
+		if req.FolderID != "" && !slices.ContainsFunc(v.Data.Folders, func(f vault.Folder) bool { return f.ID == req.FolderID }) {
+			writeErr(w, http.StatusBadRequest, "Zielordner nicht gefunden")
+			return
+		}
+		for _, id := range req.IDs {
+			if e, ok := v.Entry(id); ok && e.FolderID != req.FolderID {
+				e.FolderID = req.FolderID
+				v.UpsertEntry(e)
+				n++
+			}
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "Unbekannte Aktion")
+		return
+	}
+	if s.save(w, v) {
+		writeJSON(w, map[string]int{"count": n})
+	}
+}
+
 func (s *Server) handleSaveFolder(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
 	var f vault.Folder
 	if err := readJSON(r, &f); err != nil {

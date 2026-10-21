@@ -255,3 +255,11 @@ table.users .me { color: var(--muted); font-size: 12px; }
 .entries tr:hover .grip { opacity: 1; }
 body.dragging .tree .node { transition: background .1s; }
 body.dragging .tree .node.drop { background: var(--surface-2); }
+.entries th.sel, .entries td.sel { width: 36px; padding-right: 0; text-align: center; cursor: default; }
+.entries input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin: 0; }
+.entries tbody tr.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; margin-bottom: 10px; background: var(--surface-2); border: 1px solid var(--accent); border-radius: var(--radius); }
+.bulk-bar strong { margin-right: 6px; }
+.bulk-bar .bulk-move { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; }
+.bulk-bar .bulk-move select { width: auto; margin: 0; }
+.btn.danger-text { color: var(--danger); }
