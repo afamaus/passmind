@@ -5,8 +5,9 @@
   --text: #1c2230;
   --muted: #667085;
   --border: #d9dee7;
-  --accent: #2f6fde;
-  --accent-hover: #2459b8;
+  --accent: #0e8a8a;
+  --accent-hover: #0b7070;
+  --on-accent: #ffffff;
   --danger: #c93a3a;
   --ok: #2e9e5b;
   --warn: #d08a12;
@@ -22,8 +23,9 @@
     --text: #e6e9ef;
     --muted: #97a1b3;
     --border: #2f3946;
-    --accent: #5b8ef0;
-    --accent-hover: #7aa4f5;
+    --accent: #2cc4bd;
+    --accent-hover: #5ad8d2;
+    --on-accent: #052726;
     --danger: #e26060;
     --shadow: 0 8px 30px rgba(0, 0, 0, .45);
     color-scheme: dark;
@@ -73,7 +75,7 @@ textarea { resize: vertical; }
   border: 1px solid transparent;
   border-radius: 6px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font: inherit; font-weight: 500;
   cursor: pointer;
   text-decoration: none;

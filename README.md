@@ -1,5 +1,7 @@
 # PassMind
 
+![PassMind – Portable Password Manager](assets/banner.jpg)
+
 Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Plattform, keine Installation, keine Cloud. Läuft z. B. direkt vom USB-Stick unter Windows, macOS und Linux.
 
 ## So funktioniert es
@@ -33,6 +35,8 @@ Hinweise zu den Betriebssystemen:
 - **Windows:** SmartScreen warnt bei unbekannten Programmen. „Weitere Informationen“ → „Trotzdem ausführen“.
 - **macOS:** Die Datei ist nicht signiert. Einmalig `xattr -d com.apple.quarantine passmind-darwin-arm64 && chmod +x passmind-darwin-arm64` im Terminal ausführen, danach per Doppelklick oder `./passmind-darwin-arm64` starten. Intel-Macs nehmen `darwin-amd64`.
 - **Linux:** `chmod +x passmind-linux-amd64 && ./passmind-linux-amd64`
+
+Die Windows-Version trägt das PassMind-Icon. Unter macOS und Linux haben einzelne Programmdateien kein eigenes Icon; für Verknüpfungen liegt [`assets/passmind.ico`](assets/passmind.ico) bzw. [`assets/icon.png`](assets/icon.png) bereit.
 
 Das Konsolenfenster muss offen bleiben, solange PassMind läuft. Beenden über den ⏻-Knopf in der Oberfläche oder mit `Strg+C`.
 
@@ -70,6 +74,12 @@ Benötigt Go (Version siehe `go.mod`).
 go test ./...
 ./build.sh          # alle Plattformen nach ./dist
 go build .          # nur für das aktuelle System
+```
+
+Das Windows-Icon und die Versionsinfos stecken in `rsrc_windows_*.syso`. Nach Änderungen an `winres/` neu erzeugen mit:
+
+```
+go run github.com/tc-hib/go-winres@latest make --arch amd64,arm64
 ```
 
 Ein Git-Tag `v*` baut über GitHub Actions automatisch ein Release mit allen Plattformen.
