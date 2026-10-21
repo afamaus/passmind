@@ -2,6 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
+<script src="theme.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PassMind</title>
 <link rel="icon" href="favicon.ico" sizes="any">
@@ -94,11 +95,12 @@
 <!-- Hauptansicht -->
 <section id="view-main" class="view hidden">
   <header class="topbar">
-    <div class="brand"><img src="logo.png" alt="" class="logo"> PassMind</div>
+    <div class="brand"><img src="logo.png" alt="" class="logo"> <span>Pass<span class="mind">Mind</span></span></div>
     <input type="search" id="search" placeholder="Suchen (Titel, Benutzer, URL, Notizen, Tags) …" autocomplete="off">
     <nav>
       <button class="btn secondary" id="btn-generator" title="Passwortgenerator">🎲 <span class="lbl">Generator</span></button>
       <button class="btn secondary" id="btn-settings" title="Einstellungen">⚙ <span class="lbl">Einstellungen</span></button>
+      <button class="btn secondary" id="btn-theme" title="Hell/Dunkel umschalten">☀</button>
       <button class="btn secondary" id="btn-lock" title="Tresor sperren">🔒 <span class="lbl">Sperren</span></button>
       <button class="btn danger" id="btn-quit" title="Programm beenden">⏻</button>
     </nav>

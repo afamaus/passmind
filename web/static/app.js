@@ -381,6 +381,7 @@ function renderEntries() {
         el('button', { class: 'icon', title: 'Benutzer kopieren', onclick: (ev) => { ev.stopPropagation(); copyText(e.username, 'Benutzername'); } }, '👤'),
         el('button', { class: 'icon', title: 'Passwort kopieren', onclick: (ev) => { ev.stopPropagation(); copyPassword(e.id); } }, '🔑'),
         e.url ? el('button', { class: 'icon', title: 'URL öffnen', onclick: (ev) => { ev.stopPropagation(); openUrl(e.url); } }, '↗') : null,
+        el('button', { class: 'icon del', title: 'Eintrag löschen', onclick: (ev) => { ev.stopPropagation(); deleteEntry(e.id, e.title); } }, '🗑'),
       ));
     tr.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/entry-id', e.id));
     return tr;
@@ -410,6 +411,15 @@ function passwordCell(id) {
     },
   }, '👁');
   return el('td', { class: 'pw-cell' }, text, eye);
+}
+
+async function deleteEntry(id, title) {
+  if (!confirm(`Eintrag „${title}“ wirklich löschen?`)) return;
+  try {
+    await api('DELETE', 'entries/' + id);
+    toast('Gelöscht');
+    await reload();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function copyPassword(id) {
@@ -785,6 +795,20 @@ $('browse-form').addEventListener('submit', async (ev) => {
 function closeAllDialogs() {
   for (const d of document.querySelectorAll('dialog[open]')) d.close();
 }
+
+// Design: dunkel (PassMind-Stil, Standard) oder hell (klassisch)
+function updateThemeButton() {
+  const light = document.documentElement.dataset.theme === 'light';
+  $('btn-theme').textContent = light ? '🌙' : '☀';
+  $('btn-theme').title = light ? 'Dunkles Design (PassMind)' : 'Helles Design (klassisch)';
+}
+$('btn-theme').addEventListener('click', () => {
+  const light = document.documentElement.dataset.theme !== 'light';
+  if (light) document.documentElement.dataset.theme = 'light'; else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('pm-theme', light ? 'light' : 'dark'); } catch { /* egal */ }
+  updateThemeButton();
+});
+updateThemeButton();
 
 $('btn-lock').addEventListener('click', async () => {
   await api('POST', 'lock').catch(() => {});

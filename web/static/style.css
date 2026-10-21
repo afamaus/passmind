@@ -1,42 +1,50 @@
+/* Dunkles Design im Stil des PassMind-Logos (Standard). Helles Design über data-theme="light". */
 :root {
-  --bg: #f4f6fa;
+  --bg: #060a0e;
+  --bg-glow: rgba(25, 211, 197, .10);
+  --surface: #0c1419;
+  --surface-2: #122027;
+  --text: #d9e8ea;
+  --muted: #7f9aa1;
+  --border: #1b2d34;
+  --accent: #19d3c5;
+  --accent-2: #3ee88a;
+  --accent-hover: #4fe3d8;
+  --on-accent: #032421;
+  --danger: #ff6b6b;
+  --ok: #3ee88a;
+  --warn: #f0b429;
+  --radius: 8px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, .6), 0 0 0 1px rgba(25, 211, 197, .06);
+  --glow: 0 0 18px rgba(25, 211, 197, .35);
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f4f7f8;
+  --bg-glow: rgba(14, 138, 138, .06);
   --surface: #ffffff;
-  --surface-2: #eef1f6;
-  --text: #1c2230;
-  --muted: #667085;
-  --border: #d9dee7;
+  --surface-2: #eaf1f2;
+  --text: #15232a;
+  --muted: #5d7279;
+  --border: #d3e0e3;
   --accent: #0e8a8a;
+  --accent-2: #1f9d5c;
   --accent-hover: #0b7070;
   --on-accent: #ffffff;
   --danger: #c93a3a;
   --ok: #2e9e5b;
-  --warn: #d08a12;
-  --radius: 8px;
+  --warn: #b7791f;
   --shadow: 0 8px 30px rgba(20, 30, 50, .12);
+  --glow: none;
   color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11151c;
-    --surface: #1a2029;
-    --surface-2: #232b36;
-    --text: #e6e9ef;
-    --muted: #97a1b3;
-    --border: #2f3946;
-    --accent: #2cc4bd;
-    --accent-hover: #5ad8d2;
-    --on-accent: #052726;
-    --danger: #e26060;
-    --shadow: 0 8px 30px rgba(0, 0, 0, .45);
-    color-scheme: dark;
-  }
 }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
   margin: 0;
-  background: var(--bg);
+  background: radial-gradient(ellipse 80% 60% at 70% -10%, var(--bg-glow), transparent 70%), var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -215,3 +223,16 @@ dialog::backdrop { background: rgba(10, 15, 25, .5); }
 @media (max-width: 760px) {
   .sidebar-brand { display: none; }
 }
+
+
+/* Akzente im Logo-Stil */
+.btn:not(.secondary):not(.danger) { background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: var(--glow); }
+.btn:not(.secondary):not(.danger):hover { filter: brightness(1.08); }
+.topbar { background: linear-gradient(180deg, var(--surface), var(--bg)); }
+.brand .mind { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.card { border-color: var(--border); box-shadow: var(--shadow), var(--glow); }
+.tree .node.active { box-shadow: inset 3px 0 0 var(--accent); border-left-color: transparent; }
+.entries tbody tr:hover td.title { color: var(--accent); }
+input:focus, select:focus, textarea:focus { box-shadow: var(--glow); }
+.sidebar-brand img { box-shadow: 0 0 20px rgba(25, 211, 197, .18); }
+.entries .actions .icon.del:hover { color: var(--danger); border-color: var(--danger); }
