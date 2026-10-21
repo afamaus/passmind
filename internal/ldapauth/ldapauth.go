@@ -65,6 +65,30 @@ func serverURL(server string) (string, string, error) {
 	return u.String(), u.Hostname(), nil
 }
 
+// cipherSuites erweitert die Standardauswahl um Verfahren, die ältere Domänencontroller
+// (z. B. Windows Server 2012 R2 mit RSA-Zertifikat) für TLS 1.2 anbieten. Go schaltet die
+// RSA-Schlüsselaustausch- und CBC-SHA256-Verfahren standardmäßig ab; ohne sie bricht so ein
+// DC den Handshake kommentarlos ab. Für TLS 1.3 hat die Liste keine Bedeutung.
+func cipherSuites() []uint16 {
+	var ids []uint16
+	for _, cs := range tls.CipherSuites() {
+		ids = append(ids, cs.ID)
+	}
+	return append(ids,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+	)
+}
+
+func isReset(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "reset") || strings.Contains(m, "eof") || strings.Contains(m, "wsarecv") || strings.Contains(m, "forcibly closed")
+}
+
 // Authenticate meldet den Benutzer am Domänencontroller an und prüft, ob er (auch über
 // verschachtelte Gruppen) Mitglied der konfigurierten Gruppe ist. Geliefert wird der
 // sAMAccountName, wie er im AD steht.
@@ -77,10 +101,14 @@ func Authenticate(c vault.ADConfig, user, password string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: c.SkipVerify, MinVersion: tls.VersionTLS12}
+	tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: c.SkipVerify, MinVersion: tls.VersionTLS12, CipherSuites: cipherSuites()}
 	conn, err := ldap.DialURL(addr, ldap.DialWithTLSConfig(tlsCfg), ldap.DialWithDialer(&net.Dialer{Timeout: 8 * time.Second}))
 	if err != nil {
-		return "", fmt.Errorf("Domänencontroller nicht erreichbar (%s): %v", addr, err)
+		msg := fmt.Sprintf("Domänencontroller nicht erreichbar (%s): %v", addr, err)
+		if strings.HasPrefix(addr, "ldaps://") && isReset(err) {
+			msg += ". Der DC hat die verschlüsselte Verbindung abgebrochen. Meist hat er kein Zertifikat für LDAPS (Schannel-Ereignis 36886 auf dem DC) oder kein gemeinsames Verschlüsselungsverfahren (Ereignis 36874)."
+		}
+		return "", errors.New(msg)
 	}
 	defer conn.Close()
 	conn.SetTimeout(10 * time.Second)
