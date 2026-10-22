@@ -51,7 +51,7 @@ Liegt der Tresor auf einem Netzlaufwerk in der Domäne, können sich Mitglieder 
 
 Technisch: Anmeldung per LDAPS (Port 636, Zertifikat wird geprüft) mit dem Konto des Benutzers, Prüfung der Gruppe auch über verschachtelte Gruppen. Wird jemand aus der Gruppe genommen, kommt er nicht mehr hinein. Handy verloren: Ein Admin setzt in der Benutzerliste die MFA zurück (↺). Beim Ausschalten wird der Tresor neu verschlüsselt, die alte `.adkey`-Datei ist dann wertlos.
 
-## Tresor auf dem NAS
+## Tresor auf dem Netzlaufwerk
 
 1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux.
 2. Auf den anderen Rechnern PassMind starten und beim Entsperren „Anderen Tresor öffnen“ wählen.
