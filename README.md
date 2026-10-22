@@ -119,6 +119,16 @@ go run github.com/tc-hib/go-winres@latest make --arch amd64,arm64
 
 Ein Git-Tag `v*` baut über GitHub Actions automatisch ein Release mit allen Plattformen.
 
-## Lizenzen
+## Lizenz
 
-Die Wortliste für Passphrasen ist die [EFF Large Wordlist](https://www.eff.org/dice) (CC BY 3.0 US).
+PassMind ist freie Software: Copyright © 2026 afamaus.
+
+Du kannst das Programm unter den Bedingungen der **GNU General Public License Version 3** (oder, nach deiner Wahl, jeder späteren Version), wie von der Free Software Foundation veröffentlicht, weitergeben und verändern. Wer eine veränderte Fassung weitergibt, muss sie ebenfalls unter der GPL samt Quelltext weitergeben. PassMind wird ohne jede Gewährleistung bereitgestellt. Der vollständige Text steht in [LICENSE](LICENSE).
+
+**Name und Logo** ("PassMind", Banner, Logo und Icons) sind von der GPL ausgenommen und bleiben bei afamaus. Abgewandelte Fassungen (Forks) bitte unter eigenem Namen und Logo veröffentlichen.
+
+Fremdkomponenten und ihre Lizenzen stehen in [NOTICE](NOTICE). Sicherheitslücken bitte vertraulich melden, siehe [SECURITY.md](SECURITY.md).
+
+## Mitmachen
+
+Fehlermeldungen und Vorschläge gern als [Issue](https://github.com/afamaus/passmind/issues), Änderungen als Pull Request. Mit einem Pull Request stellst du deinen Beitrag unter dieselbe Lizenz (GPLv3 oder später).

@@ -1,0 +1,32 @@
+PassMind
+Copyright (C) 2026 afamaus
+https://github.com/afamaus/passmind
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. See LICENSE.
+
+The name "PassMind" and the logo, banner and icon files (assets/, winres/,
+web/static/logo.png, web/static/banner.jpg, web/static/favicon.ico) are not
+covered by the GPL. All rights reserved by afamaus. Forks must use their
+own name and artwork.
+
+Third-party components
+----------------------
+
+github.com/go-ldap/ldap/v3         MIT License
+github.com/go-asn1-ber/asn1-ber    MIT License
+github.com/Azure/go-ntlmssp        MIT License
+github.com/skip2/go-qrcode         MIT License
+github.com/google/uuid             BSD 3-Clause License
+golang.org/x/crypto                BSD 3-Clause License
+golang.org/x/sys                   BSD 3-Clause License
+Go standard library                BSD 3-Clause License
+
+internal/gen/words.txt: EFF Large Wordlist for Passphrases,
+Electronic Frontier Foundation, https://www.eff.org/dice
+Licensed under CC BY 3.0 US (https://creativecommons.org/licenses/by/3.0/us/).
+
+The full license texts of the Go modules are included in each module's
+source distribution (see go.sum for exact versions).
