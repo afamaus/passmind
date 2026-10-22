@@ -118,7 +118,7 @@ func (v *Vault) ResetUser(name string) (string, error) {
 			return "", errors.New("Das eigene Konto bitte über die Einstellungen ändern")
 		}
 		u.MFA, u.ChangedAt = nil, time.Now().UTC()
-		return "", v.write()
+		return "", v.write() // der persönliche Tresor hängt am AD-Passwort und bleibt erhalten
 	}
 	i := findSlot(v.slots, name)
 	if i < 0 || v.slots[i].Group {
@@ -133,6 +133,8 @@ func (v *Vault) ResetUser(name string) (string, error) {
 		return "", err
 	}
 	v.slots[i] = slot
+	// Der persönliche Tresor war an das alte Schlüsselpaar gebunden und ist nicht mehr lesbar.
+	v.Data.dropPersonal(slot.User, false)
 	// Neuer Schlüssel für die Daten, damit das alte Schlüsselpaar nichts mehr öffnet.
 	v.dek = randomKey()
 	return pw, v.write()
@@ -154,6 +156,7 @@ func (v *Vault) RemoveUser(name string) error {
 		}
 		n := u.Name
 		v.Data.Users = slices.DeleteFunc(v.Data.Users, func(x UserInfo) bool { return x.AD && strings.EqualFold(x.Name, n) })
+		v.Data.dropPersonal(n, true)
 		v.Data.Deleted = append(v.Data.Deleted, Tombstone{ID: userTomb(n), At: time.Now().UTC()})
 		return v.write()
 	}
@@ -169,6 +172,7 @@ func (v *Vault) RemoveUser(name string) error {
 		return errors.New("Der letzte Admin kann nicht entfernt werden")
 	}
 	v.slots = slices.Delete(v.slots, i, i+1)
+	v.Data.dropPersonal(name, false)
 	v.Data.Users = slices.DeleteFunc(v.Data.Users, func(u UserInfo) bool { return strings.EqualFold(u.Name, name) })
 	v.Data.Deleted = append(v.Data.Deleted, Tombstone{ID: userTomb(name), At: time.Now().UTC()})
 	v.dek = randomKey()

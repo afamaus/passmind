@@ -155,14 +155,14 @@ func TestCSRFAndHost(t *testing.T) {
 
 func TestImportFormats(t *testing.T) {
 	v := newTestVault()
-	r, err := importCSV(v, "\uFEFFOrdner;Titel;Benutzername;Passwort;Tags\nA/B;x;u;p;eins; zwei\n", "")
+	r, err := importCSV(v, &v.Data, "\uFEFFOrdner;Titel;Benutzername;Passwort;Tags\nA/B;x;u;p;eins; zwei\n", "")
 	if err != nil || r.Imported != 1 {
 		t.Fatalf("Semikolon-CSV: %+v %v", r, err)
 	}
 	if got := strings.Join(v.FolderPath(v.Data.Entries[0].FolderID), "/"); got != "A/B" {
 		t.Fatalf("Ordnerpfad %q", got)
 	}
-	r, err = importCSV(v, "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\nPrivat,,login,Mail,,,,https://mail,me,pw,\n", "")
+	r, err = importCSV(v, &v.Data, "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\nPrivat,,login,Mail,,,,https://mail,me,pw,\n", "")
 	if err != nil || r.Imported != 1 {
 		t.Fatalf("Bitwarden: %+v %v", r, err)
 	}
@@ -175,7 +175,7 @@ func TestImportFormats(t *testing.T) {
 func TestImportKeePass(t *testing.T) {
 	v := newTestVault()
 	// KeePass 2.x, Export "KeePass CSV (1.x)"
-	r, err := importCSV(v, "\"Account\",\"Login Name\",\"Password\",\"Web Site\",\"Comments\"\n\"Mail\",\"rene@example.de\",\"pw\",\"https://mail\",\"Notiz\"\n", "")
+	r, err := importCSV(v, &v.Data, "\"Account\",\"Login Name\",\"Password\",\"Web Site\",\"Comments\"\n\"Mail\",\"rene@example.de\",\"pw\",\"https://mail\",\"Notiz\"\n", "")
 	if err != nil || r.Imported != 1 || r.Columns["username"] != "Login Name" {
 		t.Fatalf("KeePass 2: %+v %v", r, err)
 	}
@@ -184,7 +184,7 @@ func TestImportKeePass(t *testing.T) {
 		t.Fatalf("KeePass-2-Eintrag: %+v", e)
 	}
 	// KeePassXC
-	r, err = importCSV(v, "\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\",\"TOTP\",\"Icon\",\"Last Modified\",\"Created\"\n\"Root/Internet\",\"Forum\",\"rene\",\"pw\",\"\",\"\",\"\",\"0\",\"\",\"\"\n", "")
+	r, err = importCSV(v, &v.Data, "\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\",\"TOTP\",\"Icon\",\"Last Modified\",\"Created\"\n\"Root/Internet\",\"Forum\",\"rene\",\"pw\",\"\",\"\",\"\",\"0\",\"\",\"\"\n", "")
 	if err != nil || r.Imported != 1 {
 		t.Fatalf("KeePassXC: %+v %v", r, err)
 	}
@@ -409,5 +409,94 @@ func TestADLogin(t *testing.T) {
 	code6, _ = totp.Code(setup["secret"].(string), time.Now())
 	if code, _ := c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6}); code != 200 {
 		t.Fatal("lokaler Admin kommt nicht mehr hinein")
+	}
+}
+
+func TestPersonalAPI(t *testing.T) {
+	s, c, launch := startServer(t)
+	c.http.Get(launch)
+	s.failures = -100
+	_, setup := c.do("POST", "api/setup/totp", nil)
+	code6, _ := totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/setup", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+
+	_, f := c.do("POST", "api/folders", map[string]any{"name": "Privat", "personal": true})
+	if f["personal"] != true {
+		t.Fatalf("persönlicher Ordner: %v", f)
+	}
+	code, e := c.do("POST", "api/entries", map[string]any{"title": "Renés Bank", "password": "geheim", "folderId": f["id"], "personal": true})
+	if code != 200 {
+		t.Fatalf("persönlicher Eintrag: %d %v", code, e)
+	}
+	_, shared := c.do("POST", "api/entries", map[string]any{"title": "Gemeinsam", "password": "x"})
+	if code, _ := c.do("POST", "api/entries/bulk", map[string]any{"action": "move", "ids": []any{shared["id"]}, "folderId": f["id"], "personal": false}); code != http.StatusBadRequest {
+		t.Fatal("Verschieben in persönlichen Ordner als gemeinsamer Eintrag akzeptiert")
+	}
+	_, add := c.do("POST", "api/users", map[string]string{"name": "anna", "role": "admin"})
+
+	// Anna (sogar Admin) sieht Renés persönlichen Tresor nicht.
+	c.do("POST", "api/lock", nil)
+	_, en := c.do("POST", "api/unlock", map[string]string{"user": "anna", "password": add["startPassword"].(string)})
+	annaCode, _ := totp.Code(en["secret"].(string), time.Now())
+	c.do("POST", "api/enroll", map[string]string{"newPassword": "annas-eigenes-pw", "code": annaCode})
+	_, d := c.do("GET", "api/data", nil)
+	for _, x := range d["entries"].([]any) {
+		if x.(map[string]any)["title"] == "Renés Bank" {
+			t.Fatal("Anna sieht Renés persönlichen Eintrag")
+		}
+	}
+	if code, _ := c.do("GET", "api/entries/"+e["id"].(string), nil); code != http.StatusNotFound {
+		t.Fatal("Anna kann Renés Eintrag per ID lesen")
+	}
+	if code, _ := c.do("DELETE", "api/entries/"+e["id"].(string), nil); code != http.StatusNotFound {
+		t.Fatal("Anna kann Renés Eintrag löschen")
+	}
+
+	// René sieht ihn wieder, als persönlich markiert.
+	c.do("POST", "api/lock", nil)
+	code6, _ = totp.Code(setup["secret"].(string), time.Now())
+	c.do("POST", "api/unlock", map[string]string{"user": "rene", "password": "ein-langes-passwort", "code": code6})
+	_, got := c.do("GET", "api/entries/"+e["id"].(string), nil)
+	if got["password"] != "geheim" || got["personal"] != true {
+		t.Fatalf("Renés Eintrag: %v", got)
+	}
+	// In den gemeinsamen Bereich verschieben.
+	if code, r := c.do("POST", "api/entries/bulk", map[string]any{"action": "move", "ids": []any{e["id"]}, "folderId": "", "personal": false}); code != 200 || r["count"] != float64(1) {
+		t.Fatalf("verschieben: %d %v", code, r)
+	}
+	_, got = c.do("GET", "api/entries/"+e["id"].(string), nil)
+	if got["personal"] != false {
+		t.Fatalf("nach Verschieben: %v", got)
+	}
+}
+
+func TestThemeAndSelect(t *testing.T) {
+	s, c, launch := startServer(t)
+	s.configPath = filepath.Join(t.TempDir(), "passmind.json")
+	c.http.Get(launch)
+	if code, _ := c.do("PUT", "api/theme", map[string]string{"theme": "light"}); code != 200 {
+		t.Fatal("Design speichern")
+	}
+	res, err := c.http.Get(c.base + "theme.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(b), "light") {
+		t.Fatalf("theme.js: %s", b)
+	}
+	if LoadConfig(s.configPath).Theme != "light" {
+		t.Fatal("Design nicht in der Konfiguration")
+	}
+	dir := t.TempDir()
+	if code, _ := c.do("POST", "api/vault/select", map[string]string{"path": dir, "expect": "existing"}); code != http.StatusNotFound {
+		t.Fatal("leerer Ordner als vorhandener Tresor akzeptiert")
+	}
+	if code, r := c.do("POST", "api/vault/select", map[string]string{"path": dir, "expect": "new", "mode": "default"}); code != 200 || r["exists"] != false {
+		t.Fatalf("neuer Tresor-Ort: %d %v", code, r)
+	}
+	if code, _ := c.do("POST", "api/connect", map[string]string{"path": dir, "user": "x", "password": "y"}); code != http.StatusBadRequest {
+		t.Fatal("Netzwerk-Anmeldung ohne Netzwerkpfad akzeptiert")
 	}
 }

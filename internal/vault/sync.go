@@ -54,6 +54,7 @@ func (v *Vault) Refresh() (changed bool, err error) {
 		}
 		v.dek = dek
 	}
+	v.mergeOwnPersonal(remote.Data)
 	v.Data = Merge(v.Data, remote.Data)
 	own := v.ownSlot()
 	var ownBefore Slot
@@ -210,6 +211,29 @@ func Merge(local, remote Data) Data {
 		}
 	}
 
+	// Persönliche Tresore: als Ganzes, die neuere Fassung gewinnt (den eigenen führt
+	// mergeOwnPersonal vorher Eintrag für Eintrag zusammen).
+	rp := map[string]Personal{}
+	for _, p := range remote.Personal {
+		rp[personalKey(p.User, p.AD)] = p
+	}
+	seen = map[string]bool{}
+	for _, p := range local.Personal {
+		k := personalKey(p.User, p.AD)
+		if r, ok := rp[k]; ok && r.Updated.After(p.Updated) {
+			p = r
+		}
+		seen[k] = true
+		if alive(userTomb(p.User), p.Updated) {
+			out.Personal = append(out.Personal, p)
+		}
+	}
+	for _, p := range remote.Personal {
+		if !seen[personalKey(p.User, p.AD)] && alive(userTomb(p.User), p.Updated) {
+			out.Personal = append(out.Personal, p)
+		}
+	}
+
 	for id, at := range tomb {
 		out.Deleted = append(out.Deleted, Tombstone{ID: id, At: at})
 	}
@@ -217,6 +241,6 @@ func Merge(local, remote Data) Data {
 	return out
 }
 
-func (v *Vault) tombstone(id string) {
-	v.Data.Deleted = append(v.Data.Deleted, Tombstone{ID: id, At: time.Now().UTC()})
+func (d *Data) tombstone(id string) {
+	d.Deleted = append(d.Deleted, Tombstone{ID: id, At: time.Now().UTC()})
 }

@@ -89,7 +89,8 @@ type Data struct {
 	Users     []UserInfo  `json:"users"`
 	Settings  Settings    `json:"settings"`
 	Deleted   []Tombstone `json:"deleted,omitempty"`
-	LegacyMFA *MFA        `json:"mfa,omitempty"` // nur Format 1
+	Personal  []Personal  `json:"personal,omitempty"` // persönliche Tresore, nur für ihren Besitzer lesbar
+	LegacyMFA *MFA        `json:"mfa,omitempty"`      // nur Format 1
 }
 
 // Vault ist ein für einen Benutzer geöffneter (entschlüsselter) Tresor.
@@ -105,6 +106,14 @@ type Vault struct {
 	mfa      *MFA
 	lastHash [32]byte // Hash der Datei, wie wir sie zuletzt gelesen oder geschrieben haben
 	Data     Data
+
+	// Persönlicher Tresor des angemeldeten Benutzers (nil = nicht geöffnet, z. B. gesperrt).
+	personal *Data
+	pkey     []byte     // Schlüssel des persönlichen Tresors
+	pdirty   bool       // persönlicher Tresor geändert, beim nächsten Schreiben neu verschlüsseln
+	plocked  bool       // vorhanden, aber nicht zu öffnen (AD-Passwort wurde geändert)
+	pkdf     *KDFParams // nur AD: Ableitung aus dem aktuellen AD-Passwort
+	pkek     []byte     // nur AD: daraus abgeleiteter Schlüssel
 }
 
 const maxHistory = 20
@@ -189,6 +198,9 @@ func Create(path, user, password string, keyFile []byte, mfa MFA) (*Vault, error
 			Settings: Settings{AutoLockMinutes: 5, ClipboardSeconds: 20},
 		},
 	}
+	if err := v.openPersonal(""); err != nil {
+		return nil, err
+	}
 	return v, v.write()
 }
 
@@ -251,6 +263,9 @@ func Open(path, user, password string, keyFile []byte) (*Vault, *MFA, error) {
 			return nil, nil, errors.New("MFA-Daten sind beschädigt")
 		}
 		v.mfa = &m
+	}
+	if err := v.openPersonal(""); err != nil {
+		return nil, nil, err
 	}
 	return v, v.MFA(), nil
 }
@@ -315,6 +330,9 @@ func migrateV1(path string, raw []byte, user, password string, keyFile []byte) (
 		return nil, nil, fmt.Errorf("Sicherung des alten Tresors fehlgeschlagen: %w", err)
 	}
 	v.lastHash = sha256.Sum256(raw)
+	if err := v.openPersonal(""); err != nil {
+		return nil, nil, err
+	}
 	if err := v.write(); err != nil {
 		return nil, nil, err
 	}
@@ -332,6 +350,9 @@ func (v *Vault) Save() error {
 }
 
 func (v *Vault) write() error {
+	if err := v.sealPersonal(); err != nil {
+		return err
+	}
 	for i := range v.slots {
 		s, err := sealTo(v.slots[i].Pub, v.dek, aadDEK(v.slots[i].User))
 		if err != nil {
@@ -535,21 +556,83 @@ func (v *Vault) KeyFileNeeded() bool {
 func (v *Vault) Close() {
 	clear(v.dek)
 	clear(v.kek)
+	clear(v.pkey)
+	clear(v.pkek)
 	v.dek, v.kek, v.priv, v.mfa = nil, nil, nil, nil
+	v.pkey, v.pkek, v.personal = nil, nil, nil
 	v.Data = Data{}
 }
 
-// UpsertEntry legt einen Eintrag an oder aktualisiert ihn und führt den Passwortverlauf.
-func (v *Vault) UpsertEntry(e Entry) Entry {
+// UpsertEntry legt im gemeinsamen Bereich einen Eintrag an oder aktualisiert ihn.
+func (v *Vault) UpsertEntry(e Entry) Entry { return v.Data.upsertEntry(e, v.user) }
+
+// DeleteEntry entfernt einen Eintrag (gemeinsam oder persönlich).
+func (v *Vault) DeleteEntry(id string) bool {
+	if v.Data.deleteEntry(id) {
+		return true
+	}
+	if v.personal != nil && v.personal.deleteEntry(id) {
+		v.pdirty = true
+		return true
+	}
+	return false
+}
+
+// Entry sucht einen Eintrag per ID (gemeinsam oder persönlich).
+func (v *Vault) Entry(id string) (Entry, bool) {
+	e, _, ok := v.Lookup(id)
+	return e, ok
+}
+
+// Lookup sucht einen Eintrag und meldet, ob er im persönlichen Tresor liegt.
+func (v *Vault) Lookup(id string) (Entry, bool, bool) {
+	if i := v.Data.findEntry(id); i >= 0 {
+		return v.Data.Entries[i], false, true
+	}
+	if v.personal != nil {
+		if i := v.personal.findEntry(id); i >= 0 {
+			return v.personal.Entries[i], true, true
+		}
+	}
+	return Entry{}, false, false
+}
+
+// UpsertFolder legt im gemeinsamen Bereich einen Ordner an oder benennt ihn um / verschiebt ihn.
+func (v *Vault) UpsertFolder(f Folder) (Folder, error) { return v.Data.upsertFolder(f) }
+
+// DeleteFolder löscht einen Ordner samt Unterordnern und Einträgen (gemeinsam oder persönlich).
+func (v *Vault) DeleteFolder(id string) {
+	if v.personal != nil && v.personal.folderExists(id) {
+		v.personal.deleteFolder(id)
+		v.pdirty = true
+		return
+	}
+	v.Data.deleteFolder(id)
+}
+
+// FolderByPath sucht oder erstellt im gemeinsamen Bereich einen Ordnerpfad wie "Server/Linux".
+func (v *Vault) FolderByPath(parts []string) string { return v.Data.folderByPath(parts) }
+
+// FolderPath liefert den Pfad eines gemeinsamen Ordners als Namensliste.
+func (v *Vault) FolderPath(id string) []string { return v.Data.folderPath(id) }
+
+func (d *Data) findEntry(id string) int {
+	for i := range d.Entries {
+		if d.Entries[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// upsertEntry legt einen Eintrag an oder aktualisiert ihn und führt den Passwortverlauf.
+func (d *Data) upsertEntry(e Entry, user string) Entry {
 	now := time.Now().UTC()
 	if e.Tags == nil {
 		e.Tags = []string{}
 	}
-	for i := range v.Data.Entries {
-		old := &v.Data.Entries[i]
-		if old.ID != e.ID {
-			continue
-		}
+	if i := d.findEntry(e.ID); e.ID != "" && i >= 0 {
+		old := &d.Entries[i]
 		e.Created = old.Created
 		e.History = old.History
 		if old.Password != e.Password && old.Password != "" {
@@ -558,112 +641,96 @@ func (v *Vault) UpsertEntry(e Entry) Entry {
 				e.History = e.History[:maxHistory]
 			}
 		}
-		e.Updated, e.UpdatedBy = now, v.user
+		e.Updated, e.UpdatedBy = now, user
 		*old = e
 		return e
 	}
 	e.ID = NewID()
-	e.Created, e.Updated, e.UpdatedBy = now, now, v.user
+	e.Created, e.Updated, e.UpdatedBy = now, now, user
 	e.History = nil
-	v.Data.Entries = append(v.Data.Entries, e)
+	d.Entries = append(d.Entries, e)
 	return e
 }
 
-// DeleteEntry entfernt einen Eintrag.
-func (v *Vault) DeleteEntry(id string) bool {
-	for i, e := range v.Data.Entries {
-		if e.ID == id {
-			v.Data.Entries = append(v.Data.Entries[:i], v.Data.Entries[i+1:]...)
-			v.tombstone(id)
-			return true
-		}
+func (d *Data) deleteEntry(id string) bool {
+	if i := d.findEntry(id); i >= 0 {
+		d.Entries = append(d.Entries[:i], d.Entries[i+1:]...)
+		d.tombstone(id)
+		return true
 	}
 	return false
 }
 
-// Entry sucht einen Eintrag per ID.
-func (v *Vault) Entry(id string) (Entry, bool) {
-	for _, e := range v.Data.Entries {
-		if e.ID == id {
-			return e, true
-		}
-	}
-	return Entry{}, false
-}
-
-// UpsertFolder legt einen Ordner an oder benennt ihn um / verschiebt ihn.
-func (v *Vault) UpsertFolder(f Folder) (Folder, error) {
+func (d *Data) upsertFolder(f Folder) (Folder, error) {
 	if f.ParentID != "" {
-		if !v.folderExists(f.ParentID) {
+		if !d.folderExists(f.ParentID) {
 			return f, errors.New("übergeordneter Ordner existiert nicht")
 		}
 		// Zyklen verhindern: der neue Elternordner darf nicht unterhalb von f liegen.
-		for p := f.ParentID; p != ""; p = v.parentOf(p) {
+		for p := f.ParentID; p != ""; p = d.parentOf(p) {
 			if p == f.ID {
 				return f, errors.New("ein Ordner kann nicht in sich selbst verschoben werden")
 			}
 		}
 	}
 	f.Updated = time.Now().UTC()
-	for i := range v.Data.Folders {
-		if v.Data.Folders[i].ID == f.ID {
-			v.Data.Folders[i] = f
+	for i := range d.Folders {
+		if d.Folders[i].ID == f.ID {
+			d.Folders[i] = f
 			return f, nil
 		}
 	}
 	f.ID = NewID()
-	v.Data.Folders = append(v.Data.Folders, f)
+	d.Folders = append(d.Folders, f)
 	return f, nil
 }
 
-// DeleteFolder löscht einen Ordner samt Unterordnern und Einträgen.
-func (v *Vault) DeleteFolder(id string) {
+func (d *Data) deleteFolder(id string) {
 	doomed := map[string]bool{id: true}
 	for changed := true; changed; {
 		changed = false
-		for _, f := range v.Data.Folders {
+		for _, f := range d.Folders {
 			if !doomed[f.ID] && doomed[f.ParentID] {
 				doomed[f.ID] = true
 				changed = true
 			}
 		}
 	}
-	folders := v.Data.Folders[:0]
-	for _, f := range v.Data.Folders {
+	folders := d.Folders[:0]
+	for _, f := range d.Folders {
 		if !doomed[f.ID] {
 			folders = append(folders, f)
 		} else {
-			v.tombstone(f.ID)
+			d.tombstone(f.ID)
 		}
 	}
-	v.Data.Folders = folders
-	entries := v.Data.Entries[:0]
-	for _, e := range v.Data.Entries {
+	d.Folders = folders
+	entries := d.Entries[:0]
+	for _, e := range d.Entries {
 		if !doomed[e.FolderID] {
 			entries = append(entries, e)
 		} else {
-			v.tombstone(e.ID)
+			d.tombstone(e.ID)
 		}
 	}
-	v.Data.Entries = entries
+	d.Entries = entries
 }
 
-// FolderByPath sucht oder erstellt einen Ordnerpfad wie "Server/Linux" (für den Import).
-func (v *Vault) FolderByPath(parts []string) string {
+func (d *Data) folderByPath(parts []string) string {
 	parent := ""
 	for _, name := range parts {
 		if name == "" {
 			continue
 		}
 		found := ""
-		for _, f := range v.Data.Folders {
+		for _, f := range d.Folders {
 			if f.ParentID == parent && f.Name == name {
 				found = f.ID
 				break
 			}
 		}
 		if found == "" {
-			f, _ := v.UpsertFolder(Folder{Name: name, ParentID: parent})
+			f, _ := d.upsertFolder(Folder{Name: name, ParentID: parent})
 			found = f.ID
 		}
 		parent = found
@@ -671,11 +738,10 @@ func (v *Vault) FolderByPath(parts []string) string {
 	return parent
 }
 
-// FolderPath liefert den Pfad eines Ordners als Namensliste (für den Export).
-func (v *Vault) FolderPath(id string) []string {
+func (d *Data) folderPath(id string) []string {
 	var parts []string
-	for p := id; p != ""; p = v.parentOf(p) {
-		for _, f := range v.Data.Folders {
+	for p := id; p != ""; p = d.parentOf(p) {
+		for _, f := range d.Folders {
 			if f.ID == p {
 				parts = append([]string{f.Name}, parts...)
 			}
@@ -687,8 +753,8 @@ func (v *Vault) FolderPath(id string) []string {
 	return parts
 }
 
-func (v *Vault) folderExists(id string) bool {
-	for _, f := range v.Data.Folders {
+func (d *Data) folderExists(id string) bool {
+	for _, f := range d.Folders {
 		if f.ID == id {
 			return true
 		}
@@ -696,8 +762,8 @@ func (v *Vault) folderExists(id string) bool {
 	return false
 }
 
-func (v *Vault) parentOf(id string) string {
-	for _, f := range v.Data.Folders {
+func (d *Data) parentOf(id string) string {
+	for _, f := range d.Folders {
 		if f.ID == id {
 			return f.ParentID
 		}

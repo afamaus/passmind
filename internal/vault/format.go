@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-const formatVersion = 2
+// Format 3 entspricht Format 2 plus persönlichen Tresoren. Die Nummer wurde erhöht, damit ältere
+// PassMind-Versionen den Tresor nicht mehr speichern und dabei die persönlichen Tresore verwerfen.
+const formatVersion = 3
 
 // Slot ist der Zugang eines Benutzers im unverschlüsselten Dateikopf. Jeder Benutzer hat ein
 // eigenes X25519-Schlüsselpaar; der private Schlüssel und die MFA-Daten sind mit dem aus seinem
@@ -61,7 +63,7 @@ func parse(raw []byte) (version int, h header, f file, err error) {
 	switch v.Version {
 	case 1:
 		return 1, h, f, nil
-	case formatVersion:
+	case 2, formatVersion: // Format 2 wird beim nächsten Speichern zu Format 3
 	default:
 		return 0, h, f, fmt.Errorf("Tresorversion %d wird nicht unterstützt. Bitte PassMind aktualisieren.", v.Version)
 	}

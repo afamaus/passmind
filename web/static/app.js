@@ -143,31 +143,133 @@ async function init() {
     document.body.textContent = e.message;
     return;
   }
+  migrateTheme();
   if (!status.exists) startSetup();
   else if (!status.unlocked) showLocked();
   else await openMain();
 }
 
-// ---------- Einrichtung ----------
+// ---------- Einrichtungsassistent ----------
+// 1 Tresor (neu/vorhanden) · 2 Speicherort und Verbindungsart · 3 Superuser anlegen bzw. anmelden
+// · 4 Design · 5 Benutzer und AD (nur Admins)
 
 let setupState = {};
+let wizard = { kind: 'new', pending: false };   // pending: nach der Anmeldung mit Schritt 4 weitermachen
 
-function setStep(n) {
-  for (const li of document.querySelectorAll('.steps li')) {
-    const s = Number(li.dataset.step);
-    li.classList.toggle('active', s === n);
-    li.classList.toggle('done', s < n);
+const STEP_IDS = { 1: ['wz-1'], 2: ['wz-2'], 3: ['setup-step1', 'setup-step2', 'setup-step3'], 4: ['wz-4'], 5: ['wz-5'] };
+
+function setStep(n, sub = 'setup-step1') {
+  for (const li of document.querySelectorAll('#view-setup .steps li')) {
+    const st = Number(li.dataset.step);
+    li.classList.toggle('active', st === n);
+    li.classList.toggle('done', st < n);
   }
-  ['setup-step1', 'setup-step2', 'setup-step3'].forEach((id, i) => $(id).classList.toggle('hidden', i + 1 !== n));
+  for (const [k, ids] of Object.entries(STEP_IDS)) {
+    for (const id of ids) $(id).classList.toggle('hidden', Number(k) !== n || (n === 3 && id !== sub));
+  }
 }
 
-function startSetup() {
-  show('view-setup');
-  $('setup-path').textContent = status.path;
-  $('setup-missing').classList.toggle('hidden', !status.missingKnown);
-  setStep(1);
-  $('setup-user').focus();
+function splitPath(p) {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i < 0 ? ['', p] : [p.slice(0, i) || p.slice(0, 1), p.slice(i + 1)];
 }
+
+function joinAny(dir, name) {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  return dir.endsWith(sep) ? dir + name : dir + sep + name;
+}
+
+function startSetup(fromUnlock = false) {
+  closeAllDialogs();
+  show('view-setup');
+  restoreUserSections();
+  $('setup-missing').classList.toggle('hidden', !status.missingKnown);
+  $('wz-conn-error').classList.toggle('hidden', !status.connError);
+  $('wz-conn-error').textContent = status.connError || '';
+  $('wz-cancel-wrap').classList.toggle('hidden', !fromUnlock);
+  const others = status.recent || [];
+  $('wz-recent').classList.toggle('hidden', others.length === 0);
+  $('wz-recent').replaceChildren(el('div', { class: 'label' }, 'Zuletzt verwendet:'),
+    ...others.map((p) => el('a', { href: '#', onclick: (ev) => { ev.preventDefault(); selectVault(p); } }, p)));
+  // Speicherort und Verbindung mit dem aktuellen Stand vorbelegen.
+  const [dir, name] = splitPath(status.path || '');
+  $('wz-dir').value = dir;
+  $('wz-name').value = name || 'passmind.vault';
+  const conn = status.connection || {};
+  setMode(conn.mode === 'network' ? 'network' : 'default');
+  $('wz-net-user').value = conn.user || '';
+  $('wz-net-pw').value = '';
+  setStep(1);
+}
+
+function setMode(mode) {
+  for (const r of document.querySelectorAll('input[name=wz-mode]')) r.checked = r.value === mode;
+  const supported = (status.connection || {}).supported;
+  $('wz-net').classList.toggle('hidden', mode !== 'network' || !supported);
+  $('wz-net-unsupported').classList.toggle('hidden', mode !== 'network' || supported);
+}
+for (const r of document.querySelectorAll('input[name=wz-mode]')) r.addEventListener('change', () => setMode(r.value));
+
+const wzMode = () => document.querySelector('input[name=wz-mode]:checked').value;
+
+for (const b of document.querySelectorAll('#wz-1 .choice')) {
+  b.addEventListener('click', () => {
+    wizard.kind = b.dataset.kind;
+    $('wz-step3-label').textContent = wizard.kind === 'new' ? 'Superuser' : 'Anmelden';
+    $('wz-2-next').textContent = wizard.kind === 'new' ? 'Weiter' : 'Tresor öffnen';
+    $('wz-error2').textContent = '';
+    setStep(2);
+    $('wz-dir').focus();
+  });
+}
+for (const b of document.querySelectorAll('[data-wz-back]')) b.addEventListener('click', () => setStep(Number(b.dataset.wzBack)));
+$('wz-cancel').addEventListener('click', () => showLocked());
+
+// Bei Netzwerk-Anmeldung zuerst die Freigabe verbinden, sonst lässt sie sich nicht durchsuchen.
+async function connectIfNeeded() {
+  if (wzMode() !== 'network') return;
+  if (!(status.connection || {}).supported) throw new Error($('wz-net-unsupported').textContent);
+  await api('POST', 'connect', { path: $('wz-dir').value.trim(), user: $('wz-net-user').value.trim(), password: $('wz-net-pw').value });
+  $('wz-net-pw').value = '';
+  status.connection = { ...status.connection, mode: 'network', user: $('wz-net-user').value.trim() };
+}
+
+$('wz-browse').addEventListener('click', async () => {
+  $('wz-error2').textContent = '';
+  try {
+    if (wzMode() === 'network' && $('wz-net-pw').value) await connectIfNeeded();
+    openBrowser('pick', $('wz-dir').value.trim());
+  } catch (e) { $('wz-error2').textContent = e.message; }
+});
+
+$('wz-2').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = $('wz-2-next');
+  busy(btn, true);
+  $('wz-error2').textContent = '';
+  try {
+    const dir = $('wz-dir').value.trim();
+    if (wzMode() === 'network' && (status.connection || {}).mode !== 'network' && !$('wz-net-pw').value) {
+      throw new Error('Bitte Benutzer und Passwort für die Freigabe eingeben.');
+    }
+    if ($('wz-net-pw').value) await connectIfNeeded();
+    const path = joinAny(dir, $('wz-name').value.trim() || 'passmind.vault');
+    await api('POST', 'vault/select', { path, mode: wzMode(), expect: wizard.kind });
+    status = await api('GET', 'status');
+    if (wizard.kind === 'new') {
+      $('setup-path').textContent = status.path;
+      setStep(3, 'setup-step1');
+      $('setup-user').focus();
+    } else {
+      wizard.pending = true;
+      showLocked();
+    }
+  } catch (e) {
+    $('wz-error2').textContent = e.message;
+  } finally {
+    busy(btn, false);
+  }
+});
 
 bindMeter($('setup-pw'), $('setup-meter'), $('setup-meter-text'));
 
@@ -183,14 +285,14 @@ $('setup-step1').addEventListener('submit', async (ev) => {
     const t = await api('POST', 'setup/totp?user=' + encodeURIComponent(user));
     $('setup-qr').src = t.qr;
     $('setup-secret').textContent = t.secret.replace(/(.{4})/g, '$1 ').trim();
-    setStep(2);
+    setStep(3, 'setup-step2');
     $('setup-code').focus();
   } catch (e) {
     $('setup-error1').textContent = e.message;
   }
 });
 
-$('setup-back').addEventListener('click', () => setStep(1));
+$('setup-back').addEventListener('click', () => setStep(3, 'setup-step1'));
 
 $('setup-step2').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -202,7 +304,7 @@ $('setup-step2').addEventListener('submit', async (ev) => {
     rememberUser(setupState.user);
     setupState = { codes: r.recoveryCodes };
     $('setup-recovery').replaceChildren(...r.recoveryCodes.map((c) => el('li', {}, c)));
-    setStep(3);
+    setStep(3, 'setup-step3');
   } catch (e) {
     $('setup-error2').textContent = e.message;
   } finally {
@@ -214,11 +316,49 @@ $('setup-copy-codes').addEventListener('click', () => {
   navigator.clipboard.writeText(setupState.codes.join('\n')).then(() => toast('Codes kopiert'));
 });
 
-$('setup-done').addEventListener('click', () => {
+$('setup-done').addEventListener('click', async () => {
   setupState = {};
   $('setup-pw').value = $('setup-pw2').value = $('setup-code').value = '';
-  openMain();
+  await reload();
+  showDesignStep();
 });
+
+function showDesignStep() {
+  show('view-setup');
+  markTheme();
+  setStep(4);
+}
+
+function markTheme() {
+  const cur = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  for (const b of document.querySelectorAll('.theme-choice')) b.classList.toggle('active', b.dataset.themeChoice === cur);
+}
+for (const b of document.querySelectorAll('.theme-choice')) {
+  b.addEventListener('click', () => { applyTheme(b.dataset.themeChoice); markTheme(); });
+}
+
+$('wz-4-next').addEventListener('click', () => {
+  if (data.role !== 'admin') { finishWizard(); return; }
+  // Benutzerverwaltung und AD-Einstellungen aus den Einstellungen hierher holen.
+  prepareAdminSections();
+  $('wz-users-slot').append($('users-section'), $('ad-section'));
+  setStep(5);
+});
+
+$('wz-finish').addEventListener('click', finishWizard);
+
+function finishWizard() {
+  restoreUserSections();
+  wizard.pending = false;
+  show('view-main');
+  $('search').focus();
+}
+
+// Die beiden Abschnitte gehören eigentlich in den Einstellungsdialog.
+function restoreUserSections() {
+  const anchor = $('cred-form');
+  if ($('users-section').parentElement !== anchor.parentElement) anchor.before($('users-section'), $('ad-section'));
+}
 
 // ---------- Entsperren ----------
 
@@ -268,6 +408,8 @@ async function showLocked(message) {
   $('unlock-recovery').value = '';
   ($('unlock-user').value || login.legacy ? $('unlock-pw') : $('unlock-user')).focus();
   if (status.error) $('unlock-error').textContent = status.error;
+  $('unlock-conn-error').classList.toggle('hidden', !status.connError);
+  $('unlock-conn-error').textContent = status.connError || '';
 }
 
 $('unlock-toggle-recovery').addEventListener('click', (ev) => {
@@ -372,15 +514,28 @@ const selected = new Set();   // ausgewählte Einträge (Auswahlkästchen)
 
 async function openMain() {
   await reload();
+  if (wizard.pending) { showDesignStep(); return; }
   show('view-main');
   $('search').focus();
 }
 
+// Der persönliche Tresor erscheint als eigener (roter) Ordner. Seine oberste Ebene bekommt in der
+// Oberfläche die Kennung PERSONAL; zum Server geht sie als folderId "" mit personal: true.
+const PERSONAL = '@personal';
+
+function isPersonal(id) {
+  return id === PERSONAL || !!data.folders.find((f) => f.id === id && f.personal);
+}
+function serverFolder(id) { return id === PERSONAL ? '' : id; }
+
 async function reload() {
   data = await api('GET', 'data');
+  for (const f of data.folders) if (f.personal && !f.parentId) f.parentId = PERSONAL;
+  for (const e of data.entries) if (e.personal && !e.folderId) e.folderId = PERSONAL;
   clipboardSeconds = data.settings.clipboardSeconds || 20;
   $('whoami').textContent = '👤 ' + data.user + (data.ad ? ' · AD' : '') + (data.role === 'admin' ? ' (Admin)' : '');
-  if (currentFolder && !data.folders.some((f) => f.id === currentFolder)) currentFolder = '';
+  if (currentFolder && currentFolder !== PERSONAL && !data.folders.some((f) => f.id === currentFolder)) currentFolder = '';
+  if (currentFolder === PERSONAL && !data.personal.available) currentFolder = '';
   $('bulk-folder').replaceChildren();
   renderTree();
   renderEntries();
@@ -411,7 +566,21 @@ function folderPath(id) {
     parts.unshift(f.name);
     f = data.folders.find((x) => x.id === f.parentId);
   }
+  if (isPersonal(id)) parts.unshift('Persönlich');
   return parts.join(' / ');
+}
+
+// Ordnersymbol als SVG, damit es sich einfärben lässt (rot = persönlich).
+function folderIcon(cls = '') {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'ficon ' + cls);
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z');
+  svg.append(path);
+  return svg;
 }
 
 // ---------- Drag & Drop ----------
@@ -436,7 +605,8 @@ document.addEventListener('dragend', () => {
 function canDrop(targetId) {
   if (!dragging) return false;
   if (dragging.kind === 'entry') return targetId !== '';
-  return !descendants(dragging.id).has(targetId);
+  // Ordner bleiben in ihrem Bereich (gemeinsam oder persönlich).
+  return isPersonal(dragging.id) === isPersonal(targetId) && !descendants(dragging.id).has(targetId);
 }
 
 function dropTarget(node, targetId, targetName) {
@@ -460,14 +630,15 @@ function dropTarget(node, targetId, targetName) {
       }
       if (d.kind === 'entry') {
         const full = await api('GET', 'entries/' + d.id);
-        if (full.folderId === targetId) return;
-        full.folderId = targetId;
+        if (full.folderId === serverFolder(targetId) && full.personal === isPersonal(targetId)) return;
+        full.folderId = serverFolder(targetId);
+        full.personal = isPersonal(targetId);
         await api('POST', 'entries', full);
         toast(`Verschoben nach „${targetName}“`);
       } else {
         const f = data.folders.find((x) => x.id === d.id);
         if (!f || (f.parentId || '') === targetId) return;
-        await api('POST', 'folders', { ...f, parentId: targetId });
+        await api('POST', 'folders', { ...f, parentId: serverFolder(targetId), personal: isPersonal(targetId) });
         toast(targetId ? `Ordner „${f.name}“ nach „${targetName}“ verschoben` : `Ordner „${f.name}“ auf oberste Ebene verschoben`);
       }
       await reload();
@@ -482,23 +653,42 @@ function folderNode(f) {
     draggable: 'true',
     title: 'Einträge oder Ordner hierher ziehen',
     onclick: () => { currentFolder = f.id; selected.clear(); renderTree(); renderEntries(); },
-  }, '📁 ', f.name, el('span', { class: 'count' }, count));
+  }, folderIcon(f.personal ? 'personal' : ''), f.name, el('span', { class: 'count' }, count));
   node.addEventListener('dragstart', (ev) => { ev.stopPropagation(); startDrag(ev, 'folder', f.id, f.name); });
   dropTarget(node, f.id, f.name);
   const kids = childrenOf(f.id);
   return el('li', {}, node, kids.length ? el('ul', {}, kids.map(folderNode)) : null);
 }
 
+function personalNode() {
+  const st = data.personal || {};
+  if (!st.available && !st.locked) return null;
+  const count = data.entries.filter((e) => e.personal).length;
+  const node = el('div', {
+    class: 'node personal-root' + (currentFolder === PERSONAL ? ' active' : ''),
+    title: st.locked ? 'Gesperrt: bisheriges AD-Passwort nötig' : 'Nur du siehst diese Einträge. Einträge hierher ziehen, um sie privat zu machen.',
+    onclick: () => {
+      if (st.locked) { openPersonalUnlock(); return; }
+      currentFolder = PERSONAL; selected.clear(); renderTree(); renderEntries();
+    },
+  }, folderIcon('personal'), 'Persönlicher Tresor', el('span', { class: 'count' }, st.locked ? '🔒' : count));
+  if (st.available) dropTarget(node, PERSONAL, 'Persönlicher Tresor');
+  const kids = st.available ? childrenOf(PERSONAL) : [];
+  return el('li', { class: 'personal-li' }, node, kids.length ? el('ul', {}, kids.map(folderNode)) : null);
+}
+
 function renderTree() {
   const all = el('div', {
     class: 'node' + (currentFolder === '' ? ' active' : ''),
     onclick: () => { currentFolder = ''; selected.clear(); renderTree(); renderEntries(); },
-  }, '🗂 Alle Einträge', el('span', { class: 'count' }, data.entries.length));
+  }, '🗂 Alle Einträge', el('span', { class: 'count' }, data.entries.filter((e) => !e.personal).length));
   dropTarget(all, '', 'Alle Einträge');
-  $('folder-tree').replaceChildren(el('li', {}, all), ...childrenOf('').map(folderNode));
-  $('list-title').textContent = currentFolder ? folderPath(currentFolder) : 'Alle Einträge';
-  $('btn-edit-folder').classList.toggle('hidden', !currentFolder);
-  $('btn-delete-folder').classList.toggle('hidden', !currentFolder);
+  $('folder-tree').replaceChildren(el('li', {}, all), ...childrenOf('').map(folderNode), personalNode() || '');
+  $('list-title').textContent = currentFolder === PERSONAL ? 'Persönlicher Tresor' : currentFolder ? folderPath(currentFolder) : 'Alle Einträge';
+  $('list-title').classList.toggle('personal', isPersonal(currentFolder));
+  const real = currentFolder && currentFolder !== PERSONAL;
+  $('btn-edit-folder').classList.toggle('hidden', !real);
+  $('btn-delete-folder').classList.toggle('hidden', !real);
 }
 
 function matches(e, term) {
@@ -510,7 +700,7 @@ function matches(e, term) {
 function renderEntries() {
   const scope = currentFolder ? descendants(currentFolder) : null;
   const list = data.entries
-    .filter((e) => (searchTerm ? true : !scope || scope.has(e.folderId)))
+    .filter((e) => (searchTerm ? true : scope ? scope.has(e.folderId) : !e.personal))
     .filter((e) => matches(e, searchTerm))
     .sort((a, b) => a.title.localeCompare(b.title, 'de'));
   const rows = list.map((e) => {
@@ -524,7 +714,8 @@ function renderEntries() {
     });
     const tr = el('tr', { class: selected.has(e.id) ? 'selected' : '', draggable: 'true', title: 'Zum Verschieben auf einen Ordner links ziehen', onclick: () => openEntry(e.id) },
       el('td', { class: 'sel', onclick: (ev) => { ev.stopPropagation(); if (ev.target !== box) box.click(); } }, box),
-      el('td', { class: 'title' }, el('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'), e.title,
+      el('td', { class: 'title' }, el('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'),
+        e.personal ? el('span', { class: 'plock', title: 'Persönlicher Tresor, nur für dich sichtbar' }, '🔒') : null, e.title,
         (searchTerm || !currentFolder) && e.folderId ? el('span', { class: 'folder-hint' }, folderPath(e.folderId)) : null),
       el('td', {}, e.username),
       passwordCell(e.id),
@@ -574,8 +765,8 @@ $('sel-all').addEventListener('change', (ev) => {
 $('bulk-clear').addEventListener('click', () => { selected.clear(); renderEntries(); });
 
 async function bulkMove(ids, folderId) {
-  const r = await api('POST', 'entries/bulk', { action: 'move', ids, folderId });
-  const name = folderId ? data.folders.find((f) => f.id === folderId)?.name : 'kein Ordner';
+  const r = await api('POST', 'entries/bulk', { action: 'move', ids, folderId: serverFolder(folderId), personal: isPersonal(folderId) });
+  const name = folderId === PERSONAL ? 'Persönlicher Tresor' : folderId ? data.folders.find((f) => f.id === folderId)?.name : 'kein Ordner';
   toast(`${r.count} ${r.count === 1 ? 'Eintrag' : 'Einträge'} verschoben nach „${name}“`);
   selected.clear();
   await reload();
@@ -648,17 +839,24 @@ $('search').addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { ev.
 let editingId = null;
 const updateEntryMeter = bindMeter($('e-password'), $('e-meter'), $('e-meter-text'));
 
-function fillFolderSelect(select, selected, { allowRoot = false, exclude = null, rootLabel = '(kein Ordner)' } = {}) {
+// space: 'both' (Einträge), 'shared' oder 'personal' (Ordner bleiben in ihrem Bereich)
+function fillFolderSelect(select, selected, { allowRoot = false, exclude = null, rootLabel = '(kein Ordner)', space = 'both' } = {}) {
   const opts = [];
-  if (allowRoot) opts.push(el('option', { value: '' }, rootLabel));
   const walk = (parent, depth) => {
     for (const f of childrenOf(parent)) {
       if (exclude && exclude.has(f.id)) continue;
-      opts.push(el('option', { value: f.id }, '  '.repeat(depth) + f.name));
+      opts.push(el('option', { value: f.id }, '\u00a0\u00a0'.repeat(depth) + f.name));
       walk(f.id, depth + 1);
     }
   };
-  walk('', 0);
+  if (space !== 'personal') {
+    if (allowRoot) opts.push(el('option', { value: '' }, rootLabel));
+    walk('', 0);
+  }
+  if (space !== 'shared' && data.personal && data.personal.available) {
+    opts.push(el('option', { value: PERSONAL }, '🔒 Persönlicher Tresor'));
+    walk(PERSONAL, 1);
+  }
   select.replaceChildren(...opts);
   select.value = selected || '';
 }
@@ -670,6 +868,7 @@ async function openEntry(id) {
   let e = { title: '', username: '', password: '', url: '', notes: '', tags: [], folderId: currentFolder || (data.folders[0] && data.folders[0].id) || '' };
   if (id) {
     try { e = await api('GET', 'entries/' + id); } catch (err) { toast(err.message, true); return; }
+    if (e.personal && !e.folderId) e.folderId = PERSONAL;
   }
   $('entry-dlg-title').textContent = id ? 'Eintrag bearbeiten' : 'Neuer Eintrag';
   fillFolderSelect($('e-folder'), e.folderId, { allowRoot: true });
@@ -701,10 +900,12 @@ $('e-generate').addEventListener('click', () => openGenerator((pw) => { $('e-pas
 
 $('entry-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  const folder = $('e-folder').value;
   const body = {
     id: editingId || '',
     title: $('e-title').value,
-    folderId: $('e-folder').value,
+    folderId: serverFolder(folder),
+    personal: isPersonal(folder),
     username: $('e-username').value,
     password: $('e-password').value,
     url: $('e-url').value.trim(),
@@ -738,7 +939,9 @@ function openFolder(f) {
   $('folder-error').textContent = '';
   $('folder-dlg-title').textContent = f ? 'Ordner bearbeiten' : 'Neuer Ordner';
   $('f-name').value = f ? f.name : '';
-  fillFolderSelect($('f-parent'), f ? f.parentId : currentFolder, { allowRoot: true, exclude: f ? descendants(f.id) : null, rootLabel: '(oberste Ebene)' });
+  // Bestehende Ordner bleiben in ihrem Bereich, neue können in beiden angelegt werden.
+  const space = f ? (f.personal ? 'personal' : 'shared') : 'both';
+  fillFolderSelect($('f-parent'), f ? f.parentId : currentFolder, { allowRoot: true, exclude: f ? descendants(f.id) : null, rootLabel: '(oberste Ebene)', space });
   $('dlg-folder').showModal();
   $('f-name').focus();
 }
@@ -761,11 +964,43 @@ $('btn-delete-folder').addEventListener('click', async () => {
 $('folder-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   try {
-    const f = await api('POST', 'folders', { id: editingFolder ? editingFolder.id : '', name: $('f-name').value, parentId: $('f-parent').value });
+    const parent = $('f-parent').value;
+    const f = await api('POST', 'folders', { id: editingFolder ? editingFolder.id : '', name: $('f-name').value, parentId: serverFolder(parent), personal: isPersonal(parent) });
     $('dlg-folder').close();
     currentFolder = f.id;
     await reload();
   } catch (e) { $('folder-error').textContent = e.message; }
+});
+
+// ---------- Persönlicher Tresor nach AD-Passwortwechsel ----------
+
+function openPersonalUnlock() {
+  $('p-old').value = '';
+  $('personal-error').textContent = '';
+  $('dlg-personal').showModal();
+  $('p-old').focus();
+}
+
+$('personal-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await api('POST', 'personal/unlock', { oldPassword: $('p-old').value });
+    $('p-old').value = '';
+    $('dlg-personal').close();
+    toast('Persönlicher Tresor entsperrt');
+    currentFolder = PERSONAL;
+    await reload();
+  } catch (e) { $('personal-error').textContent = e.message; }
+});
+
+$('p-reset').addEventListener('click', async () => {
+  if (!confirm('Persönlichen Tresor leeren? Die bisherigen persönlichen Einträge sind dann endgültig verloren.')) return;
+  try {
+    await api('POST', 'personal/reset');
+    $('dlg-personal').close();
+    toast('Persönlicher Tresor neu angelegt');
+    await reload();
+  } catch (e) { $('personal-error').textContent = e.message; }
 });
 
 // ---------- Generator ----------
@@ -818,7 +1053,7 @@ $('btn-generator').addEventListener('click', () => openGenerator(null));
 // ---------- Einstellungen ----------
 
 function openSettings() {
-  $('settings-error').textContent = '';
+  setSettingsError('');
   $('s-autolock').value = data.settings.autoLockMinutes;
   $('s-clipboard').value = data.settings.clipboardSeconds;
   $('s-recovery-left').textContent = data.recoveryRemaining;
@@ -827,16 +1062,29 @@ function openSettings() {
   $('mfa-reset-form').classList.remove('hidden');
   $('mfa-confirm-form').classList.add('hidden');
   $('m-recovery').classList.add('hidden');
-  $('u-start').classList.add('hidden');
-  for (const x of document.querySelectorAll('.admin-only')) x.classList.toggle('hidden', data.role !== 'admin');
+  restoreUserSections();
+  prepareAdminSections();
   $('cred-form').classList.toggle('hidden', !!data.ad);
   $('x-pw').placeholder = data.ad ? 'Dein AD-Passwort zur Bestätigung' : 'Dein Passwort zur Bestätigung';
-  loadUsers();
-  if (data.role === 'admin') loadAD();
+  $('s-conn').textContent = connLabel(data.connection);
   $('dlg-settings').showModal();
 }
 
 const roleLabel = { admin: 'Admin', user: 'Benutzer' };
+
+// Fehler der Benutzer-/AD-Abschnitte; die stehen in den Einstellungen oder im Einrichtungsassistenten.
+function setSettingsError(msg) {
+  $('settings-error').textContent = msg;
+  $('wz-error5').textContent = msg;
+}
+
+function prepareAdminSections() {
+  setSettingsError('');
+  $('u-start').classList.add('hidden');
+  for (const x of document.querySelectorAll('.admin-only')) x.classList.toggle('hidden', data.role !== 'admin');
+  loadUsers();
+  if (data.role === 'admin') loadAD();
+}
 
 function showStartPassword(name, pw) {
   $('u-start-name').textContent = name;
@@ -845,16 +1093,16 @@ function showStartPassword(name, pw) {
 }
 
 async function userAction(fn) {
-  $('settings-error').textContent = '';
+  setSettingsError('');
   try {
     await fn();
     await loadUsers();
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 }
 
 async function loadUsers() {
   let r;
-  try { r = await api('GET', 'users'); } catch (e) { $('settings-error').textContent = e.message; return; }
+  try { r = await api('GET', 'users'); } catch (e) { setSettingsError(e.message); return; }
   const rows = r.users.map((u) => {
     const me = u.name.toLowerCase() === r.me.toLowerCase();
     const state = (u.ad ? 'AD-Konto · ' : '') + (u.mustChange ? 'Wartet auf erste Anmeldung' : (u.mfa ? 'MFA eingerichtet' : 'MFA wird beim Anmelden eingerichtet'));
@@ -867,7 +1115,7 @@ async function loadUsers() {
           userAction(async () => { await api('POST', `users/${enc}/reset`); toast(`MFA von ${u.name} zurückgesetzt`); });
         } }, '↺'),
         el('button', { type: 'button', class: 'icon', title: 'Aus der Liste entfernen. Den Zugang selbst steuert die AD-Gruppe.', onclick: () => {
-          if (!confirm(`${u.name} aus der Liste entfernen? Solange ${u.name} in der AD-Gruppe ist, ist eine erneute Anmeldung möglich (mit neuer MFA). Den Zugang nimmst du über die AD-Gruppe weg.`)) return;
+          if (!confirm(`${u.name} aus der Liste entfernen? Solange ${u.name} in der AD-Gruppe ist, ist eine erneute Anmeldung möglich (mit neuer MFA). Den Zugang nimmst du über die AD-Gruppe weg. Der persönliche Tresor von ${u.name} wird gelöscht.`)) return;
           userAction(() => api('DELETE', `users/${enc}`));
         } }, '🗑'),
       );
@@ -876,11 +1124,11 @@ async function loadUsers() {
       actions.push(
         el('button', { type: 'button', class: 'icon', title: `Zu ${roleLabel[other]} machen`, onclick: () => userAction(() => api('PUT', `users/${enc}/role`, { role: other })) }, u.role === 'admin' ? '⬇' : '⬆'),
         el('button', { type: 'button', class: 'icon', title: 'Neues Startpasswort und MFA zurücksetzen (Passwort vergessen, Handy verloren)', onclick: () => {
-          if (!confirm(`${u.name} ein neues Startpasswort geben? Das bisherige Passwort und die Authenticator-App von ${u.name} gelten dann nicht mehr.`)) return;
+          if (!confirm(`${u.name} ein neues Startpasswort geben? Das bisherige Passwort und die Authenticator-App von ${u.name} gelten dann nicht mehr, und der persönliche Tresor von ${u.name} wird geleert (er ist an das alte Passwort gebunden).`)) return;
           userAction(async () => showStartPassword(u.name, (await api('POST', `users/${enc}/reset`)).startPassword));
         } }, '↺'),
         el('button', { type: 'button', class: 'icon', title: 'Benutzer entfernen', onclick: () => {
-          if (!confirm(`${u.name} aus dem Tresor entfernen? ${u.name} kann den Tresor danach nicht mehr öffnen.`)) return;
+          if (!confirm(`${u.name} aus dem Tresor entfernen? ${u.name} kann den Tresor danach nicht mehr öffnen, der persönliche Tresor von ${u.name} wird gelöscht.`)) return;
           userAction(() => api('DELETE', `users/${enc}`));
         } }, '🗑'),
       );
@@ -920,7 +1168,7 @@ async function loadAD() {
     for (const x of $('ad-form').querySelectorAll('input, select, button')) x.disabled = !r.local;
     if (!r.local) $('ad-status').textContent = 'Die AD-Einstellungen kann nur ein lokaler Admin ändern.';
     else if (c) $('ad-status').textContent = `Eingeschaltet für Gruppe ${c.group}.`;
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 }
 
 $('ad-test').addEventListener('click', async () => {
@@ -976,13 +1224,13 @@ $('settings-form').addEventListener('submit', async (ev) => {
     await api('PUT', 'settings', { autoLockMinutes: Number($('s-autolock').value), clipboardSeconds: Number($('s-clipboard').value) });
     toast('Einstellungen gespeichert');
     await reload();
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 });
 
 $('cred-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  $('settings-error').textContent = '';
-  if ($('c-new').value !== $('c-new2').value) { $('settings-error').textContent = 'Die neuen Passwörter stimmen nicht überein.'; return; }
+  setSettingsError('');
+  if ($('c-new').value !== $('c-new2').value) { setSettingsError('Die neuen Passwörter stimmen nicht überein.'); return; }
   const btn = ev.submitter;
   busy(btn, true);
   try {
@@ -996,7 +1244,7 @@ $('cred-form').addEventListener('submit', async (ev) => {
     toast('Zugangsdaten geändert');
     await reload();
     openSettings();
-  } catch (e) { $('settings-error').textContent = e.message; } finally { busy(btn, false); }
+  } catch (e) { setSettingsError(e.message); } finally { busy(btn, false); }
 });
 
 $('mfa-reset-form').addEventListener('submit', async (ev) => {
@@ -1008,7 +1256,7 @@ $('mfa-reset-form').addEventListener('submit', async (ev) => {
     $('m-secret').textContent = t.secret.replace(/(.{4})/g, '$1 ').trim();
     $('mfa-reset-form').classList.add('hidden');
     $('mfa-confirm-form').classList.remove('hidden');
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 });
 
 $('mfa-confirm-form').addEventListener('submit', async (ev) => {
@@ -1022,14 +1270,14 @@ $('mfa-confirm-form').addEventListener('submit', async (ev) => {
     toast('Authenticator neu eingerichtet. Neue Wiederherstellungscodes sicher aufbewahren!', false, 6000);
     data.recoveryRemaining = r.recoveryCodes.length;
     $('s-recovery-left').textContent = data.recoveryRemaining;
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 });
 
 $('i-file').addEventListener('change', async (ev) => {
   try {
     const csv = await readFileText(ev.target);
     if (!csv) return;
-    const r = await api('POST', 'import', { csv, folderId: currentFolder });
+    const r = await api('POST', 'import', { csv, folderId: serverFolder(currentFolder), personal: isPersonal(currentFolder) });
     const names = { title: 'Titel', username: 'Benutzer', password: 'Passwort', url: 'URL', notes: 'Notizen', desc: 'Beschreibung', folder: 'Ordner', tags: 'Tags' };
     const cols = r.columns || {};
     const mapped = Object.keys(names).filter((f) => cols[f]).map((f) => `${cols[f]} → ${names[f]}`).join(', ');
@@ -1037,7 +1285,7 @@ $('i-file').addEventListener('change', async (ev) => {
     if (r.ignored && r.ignored.length) toast(`Nicht übernommen: ${r.ignored.join(', ')}`, false, 8000);
     ev.target.value = '';
     await reload();
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 });
 
 $('export-form').addEventListener('submit', async (ev) => {
@@ -1053,12 +1301,12 @@ $('export-form').addEventListener('submit', async (ev) => {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     $('x-pw').value = '';
     toast('Export erstellt. Datei nach Gebrauch sicher löschen!', false, 6000);
-  } catch (e) { $('settings-error').textContent = e.message; }
+  } catch (e) { setSettingsError(e.message); }
 });
 
 // ---------- Speicherort ----------
 
-let browseMode = 'select';   // 'select' (gesperrt: Tresor wählen/anlegen) oder 'move' (geöffneten Tresor verschieben)
+let browseMode = 'pick';   // 'pick' (Einrichtungsassistent: Ort wählen) oder 'move' (geöffneten Tresor verschieben)
 let browseDir = '';
 let browseSep = '/';
 
@@ -1089,18 +1337,42 @@ async function browse(path) {
   }
 }
 
-function openBrowser(mode) {
+function openBrowser(mode, startPath = '') {
   browseMode = mode;
-  const current = mode === 'move' ? data.path : status.path;
-  const name = (current || '').split(/[\\/]/).pop() || 'passmind.vault';
-  $('browse-name').value = mode === 'move' ? 'passmind.vault' : name;
-  $('browse-title').textContent = mode === 'move' ? 'Tresor verschieben' : 'Tresor wählen oder neu anlegen';
-  $('browse-hint').textContent = mode === 'move'
-    ? 'Ordner wählen, z. B. ein Netzlaufwerk auf dem NAS. Netzwerkpfade wie \\\\NAS\\Freigabe kannst du oben direkt eintippen.'
-    : 'Vorhandene .vault-Datei anklicken oder Ordner und Dateinamen für einen neuen Tresor wählen.';
-  $('browse-ok').textContent = mode === 'move' ? 'Hierhin verschieben' : 'Diesen Tresor verwenden';
+  const pick = mode === 'pick';
+  $('browse-name').value = pick ? ($('wz-name').value || 'passmind.vault') : 'passmind.vault';
+  $('browse-title').textContent = pick ? (wizard.kind === 'new' ? 'Ordner für den neuen Tresor' : 'Vorhandenen Tresor wählen') : 'Tresor verschieben';
+  $('browse-hint').textContent = pick && wizard.kind === 'existing'
+    ? 'Die .vault-Datei anklicken. Netzwerkpfade wie \\\\NAS\\Freigabe kannst du oben direkt eintippen.'
+    : 'Ordner wählen, z. B. ein Netzlaufwerk auf dem NAS. Netzwerkpfade wie \\\\NAS\\Freigabe kannst du oben direkt eintippen.';
+  $('browse-ok').textContent = pick ? 'Übernehmen' : 'Hierhin verschieben';
+  const conn = (pick ? status.connection : data.connection) || {};
+  $('browse-auth').classList.toggle('hidden', !conn.supported);
+  $('browse-auth').open = false;
+  $('browse-net-pw').value = '';
   $('dlg-browse').showModal();
-  browse('');
+  browse(startPath);
+}
+
+$('browse-connect').addEventListener('click', async () => {
+  $('browse-error').textContent = '';
+  try {
+    const r = await api('POST', 'connect', { path: $('browse-path').value.trim(), user: $('browse-net-user').value.trim(), password: $('browse-net-pw').value });
+    $('browse-net-pw').value = '';
+    toast(`Mit ${r.share} verbunden`);
+    if (browseMode === 'pick') {
+      setMode('network');
+      $('wz-net-user').value = $('browse-net-user').value.trim();
+      status.connection = { ...status.connection, mode: 'network', user: $('wz-net-user').value };
+    }
+    browse($('browse-path').value.trim());
+  } catch (e) { $('browse-error').textContent = e.message; }
+});
+
+function connLabel(c) {
+  if (!c) return '';
+  if (c.mode === 'network') return `Verbindungsart: Netzwerk-Anmeldung als ${c.user} an ${c.share}`;
+  return 'Verbindungsart: Standard (angemeldeter Benutzer)';
 }
 
 async function selectVault(path) {
@@ -1119,7 +1391,7 @@ async function selectVault(path) {
 $('browse-go').addEventListener('click', () => browse($('browse-path').value));
 $('browse-path').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); browse($('browse-path').value); } });
 for (const a of document.querySelectorAll('.choose-vault')) {
-  a.addEventListener('click', (ev) => { ev.preventDefault(); openBrowser('select'); });
+  a.addEventListener('click', (ev) => { ev.preventDefault(); startSetup(true); });
 }
 $('s-move').addEventListener('click', () => openBrowser('move'));
 
@@ -1127,13 +1399,19 @@ $('browse-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const dir = $('browse-path').value.trim() || browseDir;
   const target = joinPath(dir, $('browse-name').value.trim() || 'passmind.vault');
-  if (browseMode === 'select') { selectVault(target); return; }
+  if (browseMode === 'pick') {
+    $('wz-dir').value = dir;
+    $('wz-name').value = $('browse-name').value.trim() || 'passmind.vault';
+    $('dlg-browse').close();
+    return;
+  }
   try {
     const r = await api('POST', 'vault/move', { path: target });
     $('dlg-browse').close();
     toast(`Tresor verschoben. Die alte Datei liegt weiterhin unter ${r.oldPath}.`, false, 8000);
     await reload();
     $('s-path').textContent = data.path;
+    $('s-conn').textContent = connLabel(data.connection);
   } catch (e) { $('browse-error').textContent = e.message; }
 });
 
@@ -1149,12 +1427,20 @@ function updateThemeButton() {
   $('btn-theme').textContent = light ? '🌙' : '☀';
   $('btn-theme').title = light ? 'Dunkles Design (PassMind)' : 'Helles Design (klassisch)';
 }
-$('btn-theme').addEventListener('click', () => {
-  const light = document.documentElement.dataset.theme !== 'light';
-  if (light) document.documentElement.dataset.theme = 'light'; else delete document.documentElement.dataset.theme;
-  try { localStorage.setItem('pm-theme', light ? 'light' : 'dark'); } catch { /* egal */ }
+// Das Design wird in der passmind.json gespeichert und von theme.js vor dem Zeichnen gesetzt.
+function applyTheme(theme) {
+  if (theme === 'light') document.documentElement.dataset.theme = 'light'; else delete document.documentElement.dataset.theme;
   updateThemeButton();
-});
+  api('PUT', 'theme', { theme }).catch((e) => toast(e.message, true));
+}
+$('btn-theme').addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
+
+// Frühere Versionen merkten sich das Design im Browser.
+function migrateTheme() {
+  let old = '';
+  try { old = localStorage.getItem('pm-theme') || ''; localStorage.removeItem('pm-theme'); } catch { /* egal */ }
+  if (old && !status.theme) applyTheme(old);
+}
 updateThemeButton();
 
 $('btn-lock').addEventListener('click', async () => {

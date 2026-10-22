@@ -162,8 +162,9 @@ func readADKey(vaultPath string) ([]byte, error) {
 
 // OpenAD öffnet den Tresor für einen AD-Benutzer über den Gruppen-Slot. Der Aufrufer muss
 // vorher per LDAP geprüft haben, dass Passwort und Gruppenmitgliedschaft stimmen. Geliefert
-// wird die MFA des Benutzers (nil = noch nicht eingerichtet).
-func OpenAD(path, user string) (*Vault, *MFA, error) {
+// wird die MFA des Benutzers (nil = noch nicht eingerichtet). Mit dem AD-Passwort wird der
+// persönliche Tresor des Benutzers geöffnet.
+func OpenAD(path, user, password string) (*Vault, *MFA, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -207,6 +208,9 @@ func OpenAD(path, user string) (*Vault, *MFA, error) {
 			m := *u.MFA
 			v.mfa = &m
 		}
+	}
+	if err := v.openPersonal(password); err != nil {
+		return nil, nil, err
 	}
 	return v, v.MFA(), nil
 }

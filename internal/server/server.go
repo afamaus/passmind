@@ -38,6 +38,7 @@ type Server struct {
 	pending      *pendingTOTP                                                    // TOTP-Geheimnis während Einrichtung/Neueinrichtung
 	enroll       *vault.Vault                                                    // geöffnet, aber erste Anmeldung (Passwort/MFA) noch nicht abgeschlossen
 	adAuth       func(cfg vault.ADConfig, user, password string) (string, error) // LDAP-Prüfung, im Test ersetzbar
+	connected    map[string]bool                                                 // in diesem Lauf verbundene Freigaben (klein geschrieben)
 
 	sessionToken string
 	launchToken  string
@@ -64,6 +65,7 @@ func New(vaultPath, configPath string, static fs.FS) *Server {
 		launchToken:  randomToken(),
 		static:       static,
 		adAuth:       ldapauth.Authenticate,
+		connected:    map[string]bool{},
 		Quit:         make(chan struct{}),
 	}
 }
@@ -118,6 +120,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServerFS(s.static))
 	mux.HandleFunc("GET /launch", s.handleLaunch)
+	mux.HandleFunc("GET /theme.js", s.handleThemeJS)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/status", s.handleStatus)
@@ -132,6 +135,10 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /api/fs", s.handleListDir)
 	api.HandleFunc("POST /api/vault/select", s.handleSelectVault)
 	api.HandleFunc("POST /api/vault/move", s.unlocked(s.handleMoveVault))
+	api.HandleFunc("POST /api/connect", s.handleConnect)
+	api.HandleFunc("PUT /api/theme", s.handleTheme)
+	api.HandleFunc("POST /api/personal/unlock", s.unlocked(s.handlePersonalUnlock))
+	api.HandleFunc("POST /api/personal/reset", s.unlocked(s.handlePersonalReset))
 	api.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]bool{"ok": true}) })
 
 	api.HandleFunc("GET /api/data", s.unlocked(s.handleData))

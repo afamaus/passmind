@@ -56,6 +56,15 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request, v *vault.V
 			e.Title, e.Username, e.Password, e.URL, e.Notes, strings.Join(e.Tags, ", "),
 		})
 	}
+	// Eigener persönlicher Tresor unter „Persönlich/…“.
+	if p := v.PersonalData(); p != nil {
+		for _, e := range p.Entries {
+			cw.Write([]string{
+				strings.Join(append([]string{"Persönlich"}, p.FolderPathIn(e.FolderID)...), "/"),
+				e.Title, e.Username, e.Password, e.URL, e.Notes, strings.Join(e.Tags, ", "),
+			})
+		}
+	}
 	cw.Flush()
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="passmind-export-`+time.Now().Format("2006-01-02")+`.csv"`)
@@ -66,12 +75,18 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, v *vault.V
 	var req struct {
 		CSV      string `json:"csv"`
 		FolderID string `json:"folderId"`
+		Personal bool   `json:"personal"` // in den persönlichen Tresor importieren
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	res, err := importCSV(v, req.CSV, req.FolderID)
+	target, err := v.ImportTarget(req.Personal)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := importCSV(v, target, req.CSV, req.FolderID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -89,7 +104,7 @@ type importResult struct {
 	Ignored  []string          `json:"ignored"`
 }
 
-func importCSV(v *vault.Vault, data, defaultFolder string) (importResult, error) {
+func importCSV(v *vault.Vault, target *vault.Data, data, defaultFolder string) (importResult, error) {
 	res := importResult{Columns: map[string]string{}, Ignored: []string{}}
 	data = strings.TrimPrefix(data, "\uFEFF")
 	cr := csv.NewReader(strings.NewReader(data))
@@ -150,14 +165,13 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (importResult, error)
 		if d := get(rec, "desc"); d != "" {
 			notes = strings.TrimSpace(d + "\n" + notes)
 		}
-		folder := defaultFolder
+		var folderPath []string
 		if p := get(rec, "folder"); p != "" {
-			parts := strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' })
+			folderPath = strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' })
 			// KeePassXC schreibt die oberste Gruppe "Root" mit, die braucht es hier nicht.
-			if len(parts) > 1 && strings.EqualFold(parts[0], "Root") {
-				parts = parts[1:]
+			if len(folderPath) > 1 && strings.EqualFold(folderPath[0], "Root") {
+				folderPath = folderPath[1:]
 			}
-			folder = v.FolderByPath(parts)
 		}
 		var tags []string
 		for _, t := range tagSplit.Split(get(rec, "tags"), -1) {
@@ -165,15 +179,14 @@ func importCSV(v *vault.Vault, data, defaultFolder string) (importResult, error)
 				tags = append(tags, t)
 			}
 		}
-		v.UpsertEntry(vault.Entry{
-			FolderID: folder,
+		v.AddImported(target, vault.Entry{
 			Title:    title,
 			Username: get(rec, "username"),
 			Password: get(rec, "password"),
 			URL:      get(rec, "url"),
 			Notes:    notes,
 			Tags:     tags,
-		})
+		}, folderPath, defaultFolder)
 		res.Imported++
 	}
 	return res, nil

@@ -8,7 +8,7 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 
 - Beim Start öffnet PassMind einen kleinen Webserver **nur auf 127.0.0.1** und öffnet die Oberfläche im Standardbrowser.
 - Der Tresor ist eine verschlüsselte Datei, standardmäßig `passmind.vault` **direkt neben dem Programm**. Programm und Tresor zusammen auf den Stick kopieren, fertig.
-- Der Speicherort ist frei wählbar (beim Einrichten, beim Entsperren oder später unter Einstellungen → „Verschieben …“). PassMind merkt sich den Tresor in `passmind.json` neben dem Programm.
+- Der Speicherort ist frei wählbar (im Einrichtungsassistenten, beim Entsperren über „Anderen Tresor öffnen oder neu anlegen“ oder später unter Einstellungen → „Verschieben …“). PassMind merkt sich Tresor, Design und Netzwerk-Anmeldungen in `passmind.json` neben dem Programm.
 - Beim Speichern wird die vorherige Fassung als `passmind.vault.bak` behalten.
 
 ## Funktionen
@@ -24,17 +24,40 @@ Portabler Passwort-Safe mit Weboberfläche. Eine einzige Programmdatei pro Platt
 - Passwort-Verlauf pro Eintrag (die letzten 20)
 - Automatische Sperre bei Inaktivität (Standard 5 min)
 - **Mehrere Benutzer** pro Tresor, jeder mit eigenem Passwort und eigener Authenticator-App
+- **Persönlicher Tresor** (roter Ordner) für jeden Benutzer: eigene Ordner und Einträge, die kein anderer sieht, auch kein Admin
+- Helles oder dunkles Design, PassMind merkt sich die Wahl
 - **MFA beim Start**: Passwort plus 6-stelliger Code aus einer Authenticator-App (TOTP), dazu 8 Wiederherstellungscodes je Benutzer
 - Optional eine **Schlüsseldatei** als zusätzlicher Schlüssel
 - CSV-Import (Passwordstate, KeePass 2 „KeePass CSV (1.x)“, KeePassXC, Bitwarden, Excel mit Komma oder Semikolon) und CSV-Export. Nach dem Import zeigt PassMind, welche Spalte in welches Feld ging
 - Passwort direkt in der Liste per Auge für 5 Sekunden anzeigen
 - **Tresor auf NAS oder Netzlaufwerk**: mehrere Rechner können denselben Tresor nutzen
 
+## Einrichtung
+
+Beim ersten Start führt ein Assistent durch die Einrichtung:
+
+1. **Tresor:** neuen Tresor anlegen oder einen vorhandenen öffnen.
+2. **Speicherort und Verbindungsart:** Ordner wählen (lokal, NAS, Netzlaufwerk). Verbindungsart **Standard** nutzt den angemeldeten Benutzer, passend für die lokale Platte oder eine Freigabe, auf die man schon Rechte hat. **Netzwerk-Anmeldung** verbindet eine Freigabe wie `\\nas\daten\passmind` mit eigenem Benutzer und Passwort (nur Windows). Das Passwort wird per Windows-DPAPI verschlüsselt in `passmind.json` gespeichert, nur derselbe Windows-Benutzer auf demselben Rechner kann es lesen; PassMind verbindet die Freigabe beim nächsten Start selbst.
+3. **Superuser:** Beim neuen Tresor Benutzername, Master-Passwort, Authenticator-App und Wiederherstellungscodes. Beim vorhandenen Tresor normale Anmeldung.
+4. **Design:** hell oder dunkel.
+5. **Benutzer:** weitere lokale Benutzer anlegen (jeder immer mit eigener MFA) und auf Wunsch die AD-Anmeldung für den gemischten Betrieb einschalten.
+
+Den Assistenten erreicht man später wieder über „Anderen Tresor öffnen oder neu anlegen“ auf der Anmeldeseite.
+
+## Persönlicher Tresor
+
+Jeder Benutzer hat links einen roten Ordner „Persönlicher Tresor“ mit eigenen Unterordnern. Was dort liegt, kann kein anderer Benutzer lesen, auch kein Admin, denn es ist mit einem eigenen Schlüssel verschlüsselt:
+
+- Lokale Benutzer: Der Schlüssel ist an ihr persönliches Schlüsselpaar gebunden. Eigene Passwortänderungen sind kein Problem. Setzt ein Admin den Benutzer zurück (↺) oder entfernt ihn, ist sein persönlicher Tresor verloren.
+- AD-Benutzer: Der Schlüssel ist mit dem AD-Passwort verschlüsselt. Nach einem Passwortwechsel im AD fragt PassMind einmal nach dem bisherigen Passwort. Wer es nicht mehr weiß, kann den persönlichen Tresor leeren und neu beginnen.
+
+Einträge lassen sich per Drag & Drop oder Mehrfachauswahl zwischen gemeinsamem und persönlichem Bereich verschieben. Ordner bleiben in ihrem Bereich. Die Suche findet beides, der Export enthält den eigenen persönlichen Tresor unter „Persönlich/…“.
+
 ## Mehrere Benutzer
 
 Wer den Tresor anlegt, ist Admin. Unter Einstellungen → „Benutzer“ legt ein Admin weitere Benutzer an (Rolle „Benutzer“ oder „Admin“) und bekommt dafür ein Startpasswort angezeigt. Das gibt er persönlich weiter. Beim ersten Anmelden legt der neue Benutzer sein eigenes Passwort fest und richtet seine eigene Authenticator-App ein. Danach meldet sich jeder mit Benutzername, eigenem Passwort und eigenem Code an.
 
-- Alle Benutzer sehen und bearbeiten alle Einträge. Im Eintrag steht, wer ihn zuletzt geändert hat.
+- Alle Benutzer sehen und bearbeiten alle gemeinsamen Einträge. Im Eintrag steht, wer ihn zuletzt geändert hat.
 - Passwort vergessen oder Handy verloren: Ein Admin klickt beim Benutzer auf ↺ und gibt ein neues Startpasswort heraus. Passwort und Authenticator werden dann neu eingerichtet.
 - Ein Admin kann Benutzer entfernen. Der Tresor wird dabei mit einem neuen Schlüssel verschlüsselt, ein alter Zugang öffnet ihn danach nicht mehr. Es bleibt immer mindestens ein Admin.
 - Tresore aus älteren PassMind-Versionen werden beim ersten Entsperren umgestellt. Du bist dann Benutzer „admin“. Eine Sicherung der alten Datei bleibt als `.v1.bak` liegen. Wer lieber einen eigenen Namen hat, legt sich selbst als Admin an, meldet sich damit an und entfernt „admin“.
@@ -53,8 +76,8 @@ Technisch: Anmeldung per LDAPS (Port 636, Zertifikat wird geprüft) mit dem Kont
 
 ## Tresor auf dem Netzlaufwerk
 
-1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux.
-2. Auf den anderen Rechnern PassMind starten und beim Entsperren „Anderen Tresor öffnen“ wählen.
+1. Unter Einstellungen → „Speicherort des Tresors“ → „Verschieben …“ einen Ordner auf dem NAS wählen, z. B. `\\NAS\Freigabe\PassMind` (Windows), `/Volumes/Freigabe` (macOS) oder einen eingehängten Ordner unter Linux. Braucht die Freigabe eine eigene Anmeldung, im Auswahldialog „Netzwerk-Anmeldung“ aufklappen.
+2. Auf den anderen Rechnern PassMind starten und im Assistenten „Vorhandenen Tresor öffnen“ wählen.
 
 Ändern zwei Rechner gleichzeitig etwas, führt PassMind die Änderungen beim Speichern zusammen: Pro Eintrag gewinnt die neuere Änderung, Löschungen werden übernommen. Die Uhrzeit der Rechner sollte daher stimmen. Wird ein Benutzer entfernt oder zurückgesetzt, müssen sich die anderen Rechner neu anmelden.
 
@@ -62,7 +85,7 @@ Technisch: Anmeldung per LDAPS (Port 636, Zertifikat wird geprüft) mit dem Kont
 
 1. Passende Datei aus den [Releases](../../releases) laden, z. B. `passmind-windows-amd64.exe`.
 2. Auf den USB-Stick kopieren und starten.
-3. Beim ersten Start führt ein Assistent durch Benutzername, Master-Passwort, Authenticator-App und Wiederherstellungscodes.
+3. Beim ersten Start führt ein Assistent durch die [Einrichtung](#einrichtung).
 
 Hinweise zu den Betriebssystemen:
 
@@ -91,6 +114,8 @@ Optionen:
 | Verschlüsselung | AES-256-GCM mit zufälligem Datenschlüssel; der unverschlüsselte Dateikopf ist als AAD mit authentifiziert |
 | Benutzer | Jeder Benutzer hat ein X25519-Schlüsselpaar. Der private Schlüssel ist mit seinem Passwort (Argon2id) verschlüsselt, der Datenschlüssel ist für jeden Benutzer einzeln versiegelt (ECDH + HKDF-SHA256 + AES-256-GCM). Beim Entfernen oder Zurücksetzen eines Benutzers wird der Datenschlüssel erneuert |
 | Schlüsseldatei | SHA-256 der Datei, per HMAC mit dem Master-Passwort verknüpft, bevor Argon2id läuft |
+| Persönlicher Tresor | Eigener zufälliger Schlüssel je Benutzer; lokal an dessen X25519-Schlüssel versiegelt, bei AD-Benutzern mit Argon2id aus dem AD-Passwort verschlüsselt. Der Inhalt liegt zusätzlich verschlüsselt im gemeinsamen Datenteil |
+| Netzwerk-Anmeldung | Windows `WNetAddConnection2` ohne Laufwerksbuchstaben; Passwort per DPAPI (CurrentUser) geschützt |
 | MFA | Pro Benutzer, mit dessen Passwort verschlüsselt; TOTP nach RFC 6238 (SHA-1, 6 Stellen, 30 s, ±1 Zeitfenster); Wiederherstellungscodes nur gehasht gespeichert, je einmal gültig |
 | Netzwerk | Server lauscht nur auf 127.0.0.1; Host-Header-Prüfung gegen DNS-Rebinding |
 | Sitzung | Zufälliger Startlink setzt ein HttpOnly/SameSite=Strict-Cookie; schreibende Anfragen brauchen einen eigenen Header (CSRF-Schutz); strikte Content-Security-Policy |
