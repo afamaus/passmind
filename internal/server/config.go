@@ -5,12 +5,42 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
-// Config wird als passmind.json gespeichert und merkt sich den zuletzt verwendeten Tresor.
+// Config wird als passmind.json gespeichert und merkt sich den zuletzt verwendeten Tresor,
+// das gewählte Design und die Zugangsdaten für Netzwerkfreigaben.
 type Config struct {
-	VaultPath string   `json:"vaultPath,omitempty"`
-	Recent    []string `json:"recent,omitempty"`
+	VaultPath string       `json:"vaultPath,omitempty"`
+	Recent    []string     `json:"recent,omitempty"`
+	Theme     string       `json:"theme,omitempty"` // "dark" (Standard) oder "light"
+	Shares    []ShareLogin `json:"shares,omitempty"`
+}
+
+// ShareLogin sind die Zugangsdaten für eine Freigabe (Verbindungsart „Netzwerk“). Das Passwort
+// ist per DPAPI für den angemeldeten Windows-Benutzer verschlüsselt.
+type ShareLogin struct {
+	Share    string `json:"share"` // z. B. \\nas\daten
+	User     string `json:"user"`
+	Password []byte `json:"password"`
+}
+
+func (c *Config) shareLogin(share string) *ShareLogin {
+	for i := range c.Shares {
+		if strings.EqualFold(c.Shares[i].Share, share) {
+			return &c.Shares[i]
+		}
+	}
+	return nil
+}
+
+func (c *Config) setShareLogin(l ShareLogin) {
+	c.dropShareLogin(l.Share)
+	c.Shares = append(c.Shares, l)
+}
+
+func (c *Config) dropShareLogin(share string) {
+	c.Shares = slices.DeleteFunc(c.Shares, func(l ShareLogin) bool { return strings.EqualFold(l.Share, share) })
 }
 
 const maxRecent = 6

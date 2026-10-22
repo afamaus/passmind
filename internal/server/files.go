@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"passmind/internal/netshare"
 	"passmind/internal/vault"
 )
 
@@ -27,9 +28,18 @@ func (s *Server) handleListDir(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dir = filepath.Clean(dir)
+	s.mu.Lock()
+	connErr := s.ensureConnectedLocked(dir)
+	s.mu.Unlock()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "Ordner kann nicht gelesen werden: "+dir)
+		msg := "Ordner kann nicht gelesen werden: " + dir
+		if connErr != nil {
+			msg += ". " + connErr.Error()
+		} else if _, ok := netshare.ShareRoot(dir); ok && netshare.Supported {
+			msg += ". Braucht die Freigabe eine eigene Anmeldung? Dann unten „Netzwerk-Anmeldung“ verwenden."
+		}
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
 	dirs, vaults := []string{}, []string{}
@@ -113,11 +123,31 @@ func resolveVaultPath(p string) (string, error) {
 }
 
 // handleSelectVault wechselt im gesperrten Zustand zu einem anderen (oder neuen) Tresor.
+// Mit mode "default" werden gespeicherte Zugangsdaten der Freigabe verworfen; expect "new" bzw.
+// "existing" prüft, ob dort (noch) kein bzw. schon ein Tresor liegt.
 func (s *Server) handleSelectVault(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Mode   string `json:"mode"`
+		Expect string `json:"expect"`
 	}
 	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.v != nil {
+		writeErr(w, http.StatusConflict, "Bitte zuerst den geöffneten Tresor sperren")
+		return
+	}
+	share, isShare := netshare.ShareRoot(req.Path)
+	if isShare && req.Mode == netshare.ModeDefault && s.cfg.shareLogin(share) != nil {
+		s.cfg.dropShareLogin(share)
+		netshare.Disconnect(share)
+		delete(s.connected, strings.ToLower(share))
+	}
+	if err := s.ensureConnectedLocked(req.Path); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -126,10 +156,12 @@ func (s *Server) handleSelectVault(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.v != nil {
-		writeErr(w, http.StatusConflict, "Bitte zuerst den geöffneten Tresor sperren")
+	switch {
+	case req.Expect == "new" && vault.Exists(p):
+		writeErr(w, http.StatusConflict, "Hier liegt schon ein Tresor: "+p+". Zum Öffnen bitte „Vorhandenen Tresor öffnen“ wählen.")
+		return
+	case req.Expect == "existing" && !vault.Exists(p):
+		writeErr(w, http.StatusNotFound, "Hier liegt kein Tresor: "+p)
 		return
 	}
 	s.setVaultPathLocked(p)
@@ -142,6 +174,10 @@ func (s *Server) handleMoveVault(w http.ResponseWriter, r *http.Request, v *vaul
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.ensureConnectedLocked(req.Path); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

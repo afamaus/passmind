@@ -12,20 +12,58 @@
 </head>
 <body>
 
-<!-- Einrichtung -->
+<!-- Einrichtungsassistent -->
 <section id="view-setup" class="view auth hidden">
-  <div class="card">
+  <div class="card wizard">
     <h1><img src="logo.png" alt="" class="logo"> PassMind einrichten</h1>
-    <ol class="steps"><li data-step="1">Zugang</li><li data-step="2">Authenticator</li><li data-step="3">Wiederherstellung</li></ol>
+    <ol class="steps"><li data-step="1">Tresor</li><li data-step="2">Speicherort</li><li data-step="3" id="wz-step3-label">Superuser</li><li data-step="4">Design</li><li data-step="5">Benutzer</li></ol>
 
-    <form id="setup-step1" class="step">
-      <p class="warn hidden" id="setup-missing">Hier lag früher ein Tresor, er ist aber gerade nicht erreichbar (z.&nbsp;B. NAS ausgeschaltet oder Laufwerk nicht verbunden). Lege nur dann einen neuen an, wenn du das wirklich willst.</p>
-      <p class="muted">Der Tresor wird hier gespeichert:<br><code id="setup-path" class="break"></code><br>
-        <a href="#" class="choose-vault">Anderen Speicherort oder vorhandenen Tresor wählen</a></p>
-      <label>Dein Benutzername
+    <div id="wz-1" class="step">
+      <p class="warn hidden" id="setup-missing">Der zuletzt verwendete Tresor ist gerade nicht erreichbar (z.&nbsp;B. NAS ausgeschaltet oder Laufwerk nicht verbunden). Lege nur dann einen neuen an, wenn du das wirklich willst.</p>
+      <p class="warn hidden" id="wz-conn-error"></p>
+      <p class="muted">Was möchtest du tun?</p>
+      <div class="choices">
+        <button type="button" class="choice" data-kind="new"><strong>🆕 Neuen Tresor anlegen</strong><span>Du wirst Superuser (Admin) und kannst danach weitere Benutzer anlegen oder die AD-Anmeldung einrichten.</span></button>
+        <button type="button" class="choice" data-kind="existing"><strong>📂 Vorhandenen Tresor öffnen</strong><span>Zum Beispiel einen Tresor, der schon auf dem Netzlaufwerk oder NAS liegt.</span></button>
+      </div>
+      <div id="wz-recent" class="recent hidden"></div>
+      <div class="row end hidden" id="wz-cancel-wrap"><button type="button" class="btn secondary" id="wz-cancel">Abbrechen</button></div>
+    </div>
+
+    <form id="wz-2" class="step hidden">
+      <label>Ordner
+        <div class="input-group">
+          <input type="text" id="wz-dir" class="mono" placeholder="z. B. C:\PassMind oder \\nas\daten\passmind" autocomplete="off" required>
+          <button type="button" class="btn secondary" id="wz-browse">Durchsuchen …</button>
+        </div>
+      </label>
+      <label>Dateiname <input type="text" id="wz-name" value="passmind.vault" autocomplete="off" required></label>
+      <fieldset class="conn">
+        <legend>Verbindungsart</legend>
+        <label class="radio"><input type="radio" name="wz-mode" value="default" checked>
+          <span><strong>Standard</strong><small class="muted">Mit dem gerade angemeldeten Benutzer. Für die lokale Platte oder eine Freigabe, auf die du schon Rechte hast.</small></span></label>
+        <label class="radio"><input type="radio" name="wz-mode" value="network">
+          <span><strong>Netzwerk-Anmeldung</strong><small class="muted">Die Freigabe verlangt einen eigenen Benutzer und ein Passwort, z.&nbsp;B. ein NAS außerhalb der Domäne.</small></span></label>
+        <div id="wz-net" class="hidden">
+          <label>Benutzer für die Freigabe <input type="text" id="wz-net-user" placeholder="z. B. rene oder NAS\rene" autocomplete="off"></label>
+          <label>Passwort für die Freigabe <input type="password" id="wz-net-pw" autocomplete="off"></label>
+          <small class="muted">Der Ordner muss ein Netzwerkpfad sein (<code>\\server\freigabe\…</code>). Das Passwort wird verschlüsselt für deinen Windows-Benutzer gespeichert, damit PassMind die Freigabe beim nächsten Start selbst verbindet.</small>
+        </div>
+        <p class="warn hidden" id="wz-net-unsupported">Die Netzwerk-Anmeldung gibt es nur unter Windows. Verbinde die Freigabe hier im Betriebssystem (macOS: Finder → Gehe zu → Mit Server verbinden, Linux: Dateimanager) und wähle dann Standard.</p>
+      </fieldset>
+      <p class="error" id="wz-error2"></p>
+      <div class="row">
+        <button type="button" class="btn secondary" data-wz-back="1">Zurück</button>
+        <button type="submit" class="btn" id="wz-2-next">Weiter</button>
+      </div>
+    </form>
+
+    <form id="setup-step1" class="step hidden">
+      <p class="muted">Neuer Tresor: <code id="setup-path" class="break"></code></p>
+      <label>Benutzername des Superusers
         <input type="text" id="setup-user" autocomplete="username" required maxlength="64" placeholder="z. B. rene">
       </label>
-      <small class="muted">Du wirst Admin und kannst später weitere Benutzer anlegen. Jeder bekommt ein eigenes Passwort und eine eigene Authenticator-App.</small>
+      <small class="muted">Der Superuser ist Admin des Tresors und meldet sich immer lokal an, auch wenn später die AD-Anmeldung dazukommt.</small>
       <label>Master-Passwort
         <input type="password" id="setup-pw" autocomplete="new-password" required minlength="10">
       </label>
@@ -43,7 +81,10 @@
         </label>
       </details>
       <p class="error" id="setup-error1"></p>
-      <button type="submit" class="btn">Weiter</button>
+      <div class="row">
+        <button type="button" class="btn secondary" data-wz-back="2">Zurück</button>
+        <button type="submit" class="btn">Weiter</button>
+      </div>
     </form>
 
     <form id="setup-step2" class="step hidden">
@@ -68,6 +109,22 @@
         <button type="button" class="btn" id="setup-done">Gespeichert, weiter</button>
       </div>
     </div>
+
+    <div id="wz-4" class="step hidden">
+      <p class="muted">Wie soll PassMind aussehen? Du kannst später jederzeit oben mit ☀/🌙 umschalten. PassMind merkt sich die Einstellung auf diesem Rechner.</p>
+      <div class="choices themes">
+        <button type="button" class="choice theme-choice" data-theme-choice="dark"><span class="swatch dark"></span><strong>Dunkel</strong><span>Im Stil des PassMind-Logos</span></button>
+        <button type="button" class="choice theme-choice" data-theme-choice="light"><span class="swatch light"></span><strong>Hell</strong><span>Klassisch</span></button>
+      </div>
+      <div class="row end"><button type="button" class="btn" id="wz-4-next">Weiter</button></div>
+    </div>
+
+    <div id="wz-5" class="step hidden">
+      <p class="muted">Lege weitere lokale Benutzer an. Jeder bekommt ein Startpasswort und richtet beim ersten Anmelden sein eigenes Passwort und seine Authenticator-App (MFA) ein. Für den gemischten Betrieb mit Active Directory schalte darunter die AD-Anmeldung ein. Beides geht auch später in den Einstellungen.</p>
+      <div id="wz-users-slot"></div>
+      <p class="error" id="wz-error5"></p>
+      <div class="row end"><button type="button" class="btn" id="wz-finish">Fertig, zum Tresor</button></div>
+    </div>
   </div>
 </section>
 
@@ -76,7 +133,8 @@
   <form class="card" id="unlock-form">
     <h1><img src="logo.png" alt="" class="logo"> PassMind</h1>
     <p class="muted">Tresor: <code id="unlock-path" class="break"></code><br>
-      <a href="#" class="choose-vault">Anderen Tresor öffnen</a></p>
+      <a href="#" class="choose-vault">Anderen Tresor öffnen oder neu anlegen</a></p>
+    <p class="warn hidden" id="unlock-conn-error"></p>
     <div id="unlock-recent" class="recent hidden"></div>
     <p class="muted hidden" id="unlock-legacy">Dieser Tresor stammt aus einer älteren PassMind-Version. Nach dem Entsperren wird er umgestellt und du bist als Benutzer „admin“ angemeldet. Eine Sicherung bleibt als <code>.v1.bak</code> liegen.</p>
     <label id="unlock-user-wrap">Benutzer
@@ -313,14 +371,14 @@
 
     <div class="section">
       <h3>Speicherort des Tresors</h3>
-      <p class="muted"><code id="s-path" class="break"></code></p>
+      <p class="muted"><code id="s-path" class="break"></code><br><span id="s-conn"></span></p>
       <p class="muted">Zum Beispiel auf ein NAS oder Netzlaufwerk verschieben, um den Tresor von mehreren Rechnern zu nutzen. Änderungen anderer Rechner werden automatisch zusammengeführt. Die bisherige Datei bleibt als Kopie liegen.</p>
       <button type="button" class="btn secondary" id="s-move">Verschieben …</button>
     </div>
 
     <div class="section" id="users-section">
       <h3>Benutzer</h3>
-      <p class="muted">Alle Benutzer sehen alle Einträge. Jeder meldet sich mit eigenem Passwort und eigener Authenticator-App an. Neue Benutzer bekommen ein Startpasswort und richten beim ersten Anmelden ihr Passwort und ihre App selbst ein.</p>
+      <p class="muted">Alle Benutzer sehen alle gemeinsamen Einträge, den eigenen persönlichen Tresor (roter Ordner) sieht nur sein Besitzer. Jeder meldet sich mit eigenem Passwort und eigener Authenticator-App an. Neue Benutzer bekommen ein Startpasswort und richten beim ersten Anmelden ihr Passwort und ihre App selbst ein.</p>
       <table class="users">
         <thead><tr><th>Name</th><th>Rolle</th><th>Status</th><th class="actions"></th></tr></thead>
         <tbody id="user-rows"></tbody>
@@ -424,10 +482,35 @@
     <div class="row browse-roots" id="browse-roots"></div>
     <ul class="browser" id="browse-list"></ul>
     <label>Dateiname <input type="text" id="browse-name" value="passmind.vault"></label>
+    <details id="browse-auth" class="hidden">
+      <summary>🔑 Netzwerk-Anmeldung (Freigabe mit eigenem Benutzer und Passwort)</summary>
+      <div class="row ad-test">
+        <input type="text" id="browse-net-user" placeholder="Benutzer, z. B. NAS\rene" autocomplete="off">
+        <input type="password" id="browse-net-pw" placeholder="Passwort" autocomplete="off">
+        <button type="button" class="btn secondary" id="browse-connect">Verbinden</button>
+      </div>
+      <small class="muted">Oben den Netzwerkpfad eintragen (<code>\\server\freigabe</code>). PassMind merkt sich die Anmeldung verschlüsselt für deinen Windows-Benutzer.</small>
+    </details>
     <p class="error" id="browse-error"></p>
     <div class="row end">
       <button type="button" class="btn secondary" data-close>Abbrechen</button>
       <button type="submit" class="btn" id="browse-ok">Hier verwenden</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Dialog: persönlichen Tresor nach AD-Passwortwechsel entsperren -->
+<dialog id="dlg-personal">
+  <form id="personal-form" method="dialog">
+    <h2>Persönlichen Tresor entsperren</h2>
+    <p class="muted">Dein persönlicher Tresor ist mit deinem AD-Passwort verschlüsselt. Seit dem letzten Mal wurde das Passwort geändert. Gib einmal dein <strong>bisheriges</strong> AD-Passwort ein, danach öffnet er sich wieder mit dem neuen.</p>
+    <label>Bisheriges AD-Passwort <input type="password" id="p-old" autocomplete="off" required></label>
+    <p class="error" id="personal-error"></p>
+    <div class="row end">
+      <button type="button" class="btn danger" id="p-reset" title="Wenn du das bisherige Passwort nicht mehr weißt">Leeren und neu beginnen</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn secondary" data-close>Abbrechen</button>
+      <button type="submit" class="btn">Entsperren</button>
     </div>
   </form>
 </dialog>

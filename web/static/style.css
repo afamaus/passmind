@@ -267,3 +267,31 @@ label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
 label.check input { width: auto; margin: 0; }
 .ad-test { margin-top: 12px; }
 #unlock-ad-hint { display: block; margin: -4px 0 8px; }
+
+/* Ordnersymbole; rot = persönlicher Tresor */
+.ficon { width: 16px; height: 16px; flex: none; fill: #e3b341; }
+.ficon.personal { fill: #e5484d; }
+.tree .personal-li { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.tree .personal-root { font-weight: 600; }
+#list-title.personal { color: #e5484d; }
+.plock { font-size: 11px; margin-right: 4px; }
+
+/* Einrichtungsassistent */
+.card.wizard { max-width: 620px; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+.choice {
+  display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 14px;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+  font: inherit; cursor: pointer;
+}
+.choice:hover, .choice.active { border-color: var(--accent); box-shadow: var(--glow); }
+.choice span { color: var(--muted); font-size: 13px; }
+.choice .swatch { display: block; height: 56px; border-radius: 6px; border: 1px solid var(--border); }
+.swatch.dark { background: linear-gradient(135deg, #060a0e 55%, #19d3c5 55%, #3ee88a); }
+.swatch.light { background: linear-gradient(135deg, #f4f7f8 55%, #0e8a8a 55%, #1f9d5c); }
+fieldset.conn { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 12px 10px; margin: 12px 0; }
+fieldset.conn legend { padding: 0 6px; font-weight: 600; }
+label.radio { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; cursor: pointer; }
+label.radio input { margin-top: 3px; }
+label.radio span { display: flex; flex-direction: column; }
+@media (max-width: 560px) { .choices { grid-template-columns: 1fr; } }

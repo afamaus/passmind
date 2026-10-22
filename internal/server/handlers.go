@@ -23,11 +23,20 @@ const issuer = "PassMind"
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	connErr := ""
+	if s.v == nil {
+		if err := s.ensureConnectedLocked(s.vaultPath); err != nil {
+			connErr = err.Error()
+		}
+	}
 	resp := map[string]any{
-		"exists":   vault.Exists(s.vaultPath),
-		"unlocked": s.v != nil,
-		"path":     s.vaultPath,
-		"recent":   s.cfg.Recent,
+		"theme":      s.cfg.Theme,
+		"connection": s.connectionInfo(s.vaultPath),
+		"connError":  connErr,
+		"exists":     vault.Exists(s.vaultPath),
+		"unlocked":   s.v != nil,
+		"path":       s.vaultPath,
+		"recent":     s.cfg.Recent,
 	}
 	// Früher benutzter Tresor ist nicht erreichbar (z. B. NAS aus): nicht einfach einen neuen anlegen lassen.
 	resp["missingKnown"] = !resp["exists"].(bool) && slices.Contains(s.cfg.Recent, s.vaultPath)
@@ -245,7 +254,7 @@ func (s *Server) openFor(user, password string, keyFile []byte) (*vault.Vault, *
 		if err != nil {
 			return nil, nil, err
 		}
-		return vault.OpenAD(s.vaultPath, name)
+		return vault.OpenAD(s.vaultPath, name, password)
 	}
 	return vault.Open(s.vaultPath, user, password, keyFile)
 }
@@ -367,6 +376,12 @@ type entrySummary struct {
 	Notes    string    `json:"notes"`
 	Tags     []string  `json:"tags"`
 	Updated  time.Time `json:"updated"`
+	Personal bool      `json:"personal,omitempty"`
+}
+
+type folderView struct {
+	vault.Folder
+	Personal bool `json:"personal,omitempty"`
 }
 
 func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
@@ -376,16 +391,28 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vau
 		return
 	}
 	list := make([]entrySummary, 0, len(v.Data.Entries))
-	for _, e := range v.Data.Entries {
-		list = append(list, entrySummary{e.ID, e.FolderID, e.Title, e.Username, e.URL, e.Notes, e.Tags, e.Updated})
+	folders := make([]folderView, 0, len(v.Data.Folders))
+	add := func(d *vault.Data, personal bool) {
+		for _, e := range d.Entries {
+			list = append(list, entrySummary{e.ID, e.FolderID, e.Title, e.Username, e.URL, e.Notes, e.Tags, e.Updated, personal})
+		}
+		for _, f := range d.Folders {
+			folders = append(folders, folderView{f, personal})
+		}
+	}
+	add(&v.Data, false)
+	if p := v.PersonalData(); p != nil {
+		add(p, true)
 	}
 	writeJSON(w, map[string]any{
-		"folders":           v.Data.Folders,
+		"folders":           folders,
 		"entries":           list,
+		"personal":          v.PersonalState(),
 		"settings":          v.Data.Settings,
 		"recoveryRemaining": recoveryLeft(v),
 		"keyFileNeeded":     v.KeyFileNeeded(),
 		"path":              v.Path(),
+		"connection":        s.connectionInfo(v.Path()),
 		"user":              v.User(),
 		"role":              v.Role(),
 		"ad":                v.IsADUser(),
@@ -393,26 +420,37 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request, v *vault.Vau
 }
 
 func (s *Server) handleGetEntry(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
-	e, ok := v.Entry(r.PathValue("id"))
+	e, personal, ok := v.Lookup(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "Eintrag nicht gefunden")
 		return
 	}
-	writeJSON(w, e)
+	writeJSON(w, struct {
+		vault.Entry
+		Personal bool `json:"personal"`
+	}{e, personal})
 }
 
 func (s *Server) handleSaveEntry(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
-	var e vault.Entry
-	if err := readJSON(r, &e); err != nil {
+	var req struct {
+		vault.Entry
+		Personal bool `json:"personal"`
+	}
+	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	e := req.Entry
 	e.Title = strings.TrimSpace(e.Title)
 	if e.Title == "" {
 		writeErr(w, http.StatusBadRequest, "Titel darf nicht leer sein")
 		return
 	}
-	e = v.UpsertEntry(e)
+	e, err := v.SaveEntry(e, req.Personal)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if !s.save(w, v) {
 		return
 	}
@@ -430,11 +468,13 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request, v *va
 }
 
 // handleBulkEntries löscht oder verschiebt mehrere Einträge auf einmal (eine Speicherung).
+// Verschoben werden kann auch zwischen gemeinsamem und persönlichem Bereich.
 func (s *Server) handleBulkEntries(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
 	var req struct {
 		Action   string   `json:"action"`
 		IDs      []string `json:"ids"`
 		FolderID string   `json:"folderId"`
+		Personal bool     `json:"personal"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -453,16 +493,21 @@ func (s *Server) handleBulkEntries(w http.ResponseWriter, r *http.Request, v *va
 			}
 		}
 	case "move":
-		if req.FolderID != "" && !slices.ContainsFunc(v.Data.Folders, func(f vault.Folder) bool { return f.ID == req.FolderID }) {
+		if req.FolderID != "" && !v.FolderExists(req.FolderID, req.Personal) {
 			writeErr(w, http.StatusBadRequest, "Zielordner nicht gefunden")
 			return
 		}
 		for _, id := range req.IDs {
-			if e, ok := v.Entry(id); ok && e.FolderID != req.FolderID {
-				e.FolderID = req.FolderID
-				v.UpsertEntry(e)
-				n++
+			e, personal, ok := v.Lookup(id)
+			if !ok || (e.FolderID == req.FolderID && personal == req.Personal) {
+				continue
 			}
+			e.FolderID = req.FolderID
+			if _, err := v.SaveEntry(e, req.Personal); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			n++
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "Unbekannte Aktion")
@@ -474,23 +519,27 @@ func (s *Server) handleBulkEntries(w http.ResponseWriter, r *http.Request, v *va
 }
 
 func (s *Server) handleSaveFolder(w http.ResponseWriter, r *http.Request, v *vault.Vault) {
-	var f vault.Folder
-	if err := readJSON(r, &f); err != nil {
+	var req struct {
+		vault.Folder
+		Personal bool `json:"personal"`
+	}
+	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	f := req.Folder
 	f.Name = strings.TrimSpace(f.Name)
 	if f.Name == "" {
 		writeErr(w, http.StatusBadRequest, "Name darf nicht leer sein")
 		return
 	}
-	f, err := v.UpsertFolder(f)
+	f, err := v.SaveFolder(f, req.Personal)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if s.save(w, v) {
-		writeJSON(w, f)
+		writeJSON(w, folderView{f, req.Personal})
 	}
 }
 
